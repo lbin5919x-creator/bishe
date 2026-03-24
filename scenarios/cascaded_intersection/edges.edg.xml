@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edges>
+    <!-- J1 edges -->
+    <edge id="W1_to_J1" from="W1" to="J1" numLanes="2" speed="13.89"/>
+    <edge id="J1_to_W1" from="J1" to="W1" numLanes="2" speed="13.89"/>
+    <edge id="N1_to_J1" from="N1" to="J1" numLanes="2" speed="13.89"/>
+    <edge id="J1_to_N1" from="J1" to="N1" numLanes="2" speed="13.89"/>
+    <edge id="S1_to_J1" from="S1" to="J1" numLanes="2" speed="13.89"/>
+    <edge id="J1_to_S1" from="J1" to="S1" numLanes="2" speed="13.89"/>
+    <!-- Link road -->
+    <edge id="J1_to_J2" from="J1" to="J2" numLanes="2" speed="13.89"/>
+    <edge id="J2_to_J1" from="J2" to="J1" numLanes="2" speed="13.89"/>
+    <!-- J2 edges (T-intersection, no North) -->
+    <edge id="J2_to_E2" from="J2" to="E2" numLanes="2" speed="13.89"/>
+    <edge id="E2_to_J2" from="E2" to="J2" numLanes="2" speed="13.89"/>
+    <edge id="S2_to_J2" from="S2" to="J2" numLanes="2" speed="13.89"/>
+    <edge id="J2_to_S2" from="J2" to="S2" numLanes="2" speed="13.89"/>
+</edges>

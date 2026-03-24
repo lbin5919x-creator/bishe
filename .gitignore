@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+
+# 虚拟环境
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 训练输出（可再生）
+outputs/
+
+# 模型检查点（较大二进制文件）
+models/checkpoints/*.pt
+
+# 系统文件
+.DS_Store
+Thumbs.db

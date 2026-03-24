@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes>
+    <node id="J" x="200.00" y="200.00" type="traffic_light"/>
+    <node id="W" x="50.00" y="200.00" type="dead_end"/>
+    <node id="E" x="350.00" y="200.00" type="dead_end"/>
+    <node id="S" x="200.00" y="50.00" type="dead_end"/>
+</nodes>

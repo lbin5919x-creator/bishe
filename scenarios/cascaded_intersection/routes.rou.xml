@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Routes for cascaded intersection: Cross (J1) + T-intersection (J2) -->
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+
+    <vType id="normal" accel="2.6" decel="4.5" sigma="0.5" length="5" minGap="2.5" maxSpeed="13.89" guiShape="passenger"/>
+    <vType id="priority" accel="3.0" decel="5.0" sigma="0.3" length="5" minGap="2.0" maxSpeed="16.67" guiShape="emergency" color="1,0,0"/>
+
+    <!-- ========== Main corridor (W1 -> J1 -> J2 -> E2) ========== -->
+    <route id="W_to_E" edges="W1_to_J1 J1_to_J2 J2_to_E2"/>
+    <route id="E_to_W" edges="E2_to_J2 J2_to_J1 J1_to_W1"/>
+
+    <!-- ========== J1 cross traffic (十字路口) ========== -->
+    <route id="N1_to_S1" edges="N1_to_J1 J1_to_S1"/>
+    <route id="S1_to_N1" edges="S1_to_J1 J1_to_N1"/>
+    <route id="N1_to_E" edges="N1_to_J1 J1_to_J2 J2_to_E2"/>
+    <route id="S1_to_E" edges="S1_to_J1 J1_to_J2 J2_to_E2"/>
+    <route id="W_to_N1" edges="W1_to_J1 J1_to_N1"/>
+    <route id="W_to_S1" edges="W1_to_J1 J1_to_S1"/>
+
+    <!-- ========== J2 T-intersection traffic (丁字路口, no North) ========== -->
+    <route id="S2_to_E" edges="S2_to_J2 J2_to_E2"/>
+    <route id="S2_to_W" edges="S2_to_J2 J2_to_J1 J1_to_W1"/>
+    <route id="E_to_S2" edges="E2_to_J2 J2_to_S2"/>
+    <route id="W_to_S2" edges="W1_to_J1 J1_to_J2 J2_to_S2"/>
+
+    <!-- ========== Traffic Flows ========== -->
+    <!-- Main corridor (high volume) -->
+    <flow id="flow_W_E" type="normal" route="W_to_E" begin="0" end="3600" vehsPerHour="600" departLane="best" departSpeed="max"/>
+    <flow id="flow_E_W" type="normal" route="E_to_W" begin="0" end="3600" vehsPerHour="500" departLane="best" departSpeed="max"/>
+
+    <!-- J1 cross traffic (十字路口) -->
+    <flow id="flow_N1_S1" type="normal" route="N1_to_S1" begin="0" end="3600" vehsPerHour="300" departLane="best" departSpeed="max"/>
+    <flow id="flow_S1_N1" type="normal" route="S1_to_N1" begin="0" end="3600" vehsPerHour="300" departLane="best" departSpeed="max"/>
+
+    <!-- J2 T-intersection traffic (丁字路口) -->
+    <flow id="flow_S2_E" type="normal" route="S2_to_E" begin="0" end="3600" vehsPerHour="300" departLane="best" departSpeed="max"/>
+    <flow id="flow_S2_W" type="normal" route="S2_to_W" begin="0" end="3600" vehsPerHour="300" departLane="best" departSpeed="max"/>
+
+    <!-- Cross-junction flows -->
+    <flow id="flow_N1_E" type="normal" route="N1_to_E" begin="0" end="3600" vehsPerHour="150" departLane="best" departSpeed="max"/>
+    <flow id="flow_S1_E" type="normal" route="S1_to_E" begin="0" end="3600" vehsPerHour="150" departLane="best" departSpeed="max"/>
+    <flow id="flow_E_S2" type="normal" route="E_to_S2" begin="0" end="3600" vehsPerHour="150" departLane="best" departSpeed="max"/>
+
+    <!-- Priority vehicles -->
+    <flow id="flow_priority_WE" type="priority" route="W_to_E" begin="300" end="3600" period="600" departLane="best" departSpeed="max"/>
+    <flow id="flow_priority_EW" type="priority" route="E_to_W" begin="450" end="3600" period="600" departLane="best" departSpeed="max"/>
+
+</routes>

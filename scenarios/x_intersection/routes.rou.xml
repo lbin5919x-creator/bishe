@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+
+    <vType id="normal" accel="2.6" decel="4.5" sigma="0.5" length="5" minGap="2.5" maxSpeed="13.89" guiShape="passenger"/>
+    <vType id="priority" accel="3.0" decel="5.0" sigma="0.3" length="5" minGap="2.0" maxSpeed="16.67" guiShape="emergency" color="1,0,0"/>
+
+    <!-- Through routes -->
+    <route id="W_to_E" edges="W_to_J J_to_E"/>
+    <route id="E_to_W" edges="E_to_J J_to_W"/>
+    <route id="N_to_S" edges="N_to_J J_to_S"/>
+    <route id="S_to_N" edges="S_to_J J_to_N"/>
+
+    <!-- Turn routes -->
+    <route id="W_to_N" edges="W_to_J J_to_N"/>
+    <route id="W_to_S" edges="W_to_J J_to_S"/>
+    <route id="E_to_N" edges="E_to_J J_to_N"/>
+    <route id="E_to_S" edges="E_to_J J_to_S"/>
+    <route id="N_to_W" edges="N_to_J J_to_W"/>
+    <route id="N_to_E" edges="N_to_J J_to_E"/>
+    <route id="S_to_W" edges="S_to_J J_to_W"/>
+    <route id="S_to_E" edges="S_to_J J_to_E"/>
+
+    <!-- Main flows -->
+    <flow id="flow_WE" type="normal" route="W_to_E" begin="0" end="3600" vehsPerHour="500" departLane="best" departSpeed="max"/>
+    <flow id="flow_EW" type="normal" route="E_to_W" begin="0" end="3600" vehsPerHour="450" departLane="best" departSpeed="max"/>
+    <flow id="flow_NS" type="normal" route="N_to_S" begin="0" end="3600" vehsPerHour="350" departLane="best" departSpeed="max"/>
+    <flow id="flow_SN" type="normal" route="S_to_N" begin="0" end="3600" vehsPerHour="350" departLane="best" departSpeed="max"/>
+
+    <!-- Turn flows -->
+    <flow id="flow_WN" type="normal" route="W_to_N" begin="0" end="3600" vehsPerHour="100" departLane="best" departSpeed="max"/>
+    <flow id="flow_ES" type="normal" route="E_to_S" begin="0" end="3600" vehsPerHour="100" departLane="best" departSpeed="max"/>
+
+    <!-- Priority vehicles -->
+    <flow id="flow_priority_WE" type="priority" route="W_to_E" begin="300" end="3600" period="600" departLane="best" departSpeed="max"/>
+
+</routes>

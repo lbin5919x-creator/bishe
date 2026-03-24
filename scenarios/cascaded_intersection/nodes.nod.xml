@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes>
+    <!-- J1: Cross intersection -->
+    <node id="J1" x="300.00" y="300.00" type="traffic_light"/>
+    <node id="W1" x="100.00" y="300.00" type="dead_end"/>
+    <node id="N1" x="300.00" y="450.00" type="dead_end"/>
+    <node id="S1" x="300.00" y="150.00" type="dead_end"/>
+    <!-- J2: T-intersection (moved closer: 100m link road) -->
+    <node id="J2" x="400.00" y="300.00" type="traffic_light"/>
+    <node id="E2" x="600.00" y="300.00" type="dead_end"/>
+    <node id="S2" x="400.00" y="150.00" type="dead_end"/>
+</nodes>
