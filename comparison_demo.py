@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,12 @@ import numpy as np
 import pandas as pd
 import torch
 import traci
+
+# 添加numpy安全全局变量以支持PyTorch 2.6加载旧模型
+try:
+    torch.serialization.add_safe_globals([np.core.multiarray.scalar, np.dtype])
+except:
+    pass
 
 from agent.dqn_agent import DQNAgent, AgentConfig
 from config.settings import (
@@ -69,13 +76,20 @@ def _sumo_binary() -> str:
     return os.path.join(sumo_home, "bin", "sumo-gui")
 
 
-def start_sumo(scenario: str, seed: int) -> None:
-    """启动单个 SUMO GUI 实例。"""
+def start_sumo(scenario: str, seed: int, delay: int = 100) -> None:
+    """启动单个 SUMO GUI 实例。
+    
+    参数:
+        scenario: 场景名称
+        seed: 随机种子
+        delay: GUI延迟（毫秒），默认100ms。设为0则最快速度运行。
+    """
     sumo_cfg = str(SCENARIO_DIR / scenario / "simulation.sumocfg")
     binary = _sumo_binary()
     cmd = [
         binary, "-c", sumo_cfg,
         "--start",
+        "--delay", str(delay),
         "--no-warnings", "true",
         "--no-step-log", "true",
         "--time-to-teleport", "-1",
@@ -344,22 +358,51 @@ def collect_metrics(net: NetworkInfo, step: int, action: int) -> StepMetrics:
 
 
 _poi_ids: List[str] = []
+_polygon_ids: List[str] = []
 
 
-def _ensure_poi(poi_id: str, x: float, y: float, text: str) -> None:
-    """创建或更新一个 POI 文本标签。"""
+def _ensure_poi(poi_id: str, x: float, y: float, text: str, color: Tuple[int, int, int, int] = (0, 0, 0, 255)) -> None:
+    """创建或更新一个 POI 文本标签。
+    
+    参数:
+        color: RGBA颜色，默认黑色 (0, 0, 0, 255)
+    """
     if poi_id not in _poi_ids:
         try:
             traci.poi.add(poi_id, x=x, y=y,
-                          color=(0, 0, 0, 0), poiType=text, layer=255)
+                          color=color, poiType=text, layer=255)
             _poi_ids.append(poi_id)
         except traci.TraCIException:
             pass
     else:
         try:
             traci.poi.setType(poi_id, text)
+            traci.poi.setColor(poi_id, color)
         except traci.TraCIException:
             pass
+
+
+def _add_text_box(box_id: str, x: float, y: float, width: float, height: float,
+                  text: str, bg_color: Tuple[int, int, int, int] = (255, 255, 255, 230)) -> None:
+    """创建一个带背景的文本框。"""
+    # 创建背景矩形
+    if box_id not in _polygon_ids:
+        try:
+            shape = [
+                (x, y),
+                (x + width, y),
+                (x + width, y - height),
+                (x, y - height)
+            ]
+            traci.polygon.add(box_id, shape, bg_color, fill=True, layer=200)
+            _polygon_ids.append(box_id)
+        except traci.TraCIException:
+            pass
+    
+    # 在矩形中心添加文字
+    text_x = x + width / 2
+    text_y = y - height / 2
+    _ensure_poi(f"{box_id}_text", text_x, text_y, text, (0, 0, 0, 255))
 
 
 def update_gui_fixed(step: int, m: StepMetrics, cum_throughput: int,
@@ -424,6 +467,87 @@ def update_gui_dqn(
             _ensure_poi("line4", base_x, base_y - 45, "")
 
 
+def show_final_results_on_map(net: NetworkInfo, metrics: List[StepMetrics], title: str, lane_stats: Dict[str, List[float]]) -> None:
+    """在仿真结束后，将最终结果直接打在 SUMO 地图上（自适应排版）。"""
+    if not metrics:
+        return
+
+    # 计算全局最终指标
+    avg_wait = np.mean([m.waiting_time for m in metrics])
+    avg_q = np.mean([m.avg_queue for m in metrics])
+    total_cars = metrics[-1].throughput
+
+    # ================= 核心修改：动态计算面板位置 =================
+    # 获取当前路网的边界坐标：((xmin, ymin), (xmax, ymax))
+    boundary = traci.simulation.getNetBoundary()
+    xmin, ymin = boundary[0]
+    xmax, ymax = boundary[1]
+
+    box_width = 110
+    box_height = 85
+    
+    # 将面板放置在【右上角空白处】，稍微往左调整
+    box_x = xmax - box_width - 10
+    box_y = ymax - 10
+    # ==============================================================
+
+    # 根据类型选择不同颜色
+    if "固定" in title or "FIXED" in title.upper():
+        bg_color = (220, 50, 50, 200)  # 红色系 - 固定配时
+        title_en = "FIXED"
+    else:
+        bg_color = (50, 150, 50, 200)  # 绿色系 - DQN
+        title_en = "DQN"
+    
+    # 创建彩色背景框
+    _add_text_box("result_box", box_x, box_y, box_width, box_height, "", bg_color)
+    
+    # 面板文字坐标（相对于背景框）
+    text_x = box_x + 15
+    text_y = box_y - 12
+    line_height = 14
+    white = (255, 255, 255, 255)
+    
+    # 显示结果（简化格式）
+    _ensure_poi("final_title", text_x, text_y, f"===== {title_en} =====", white)
+    _ensure_poi("final_wait", text_x, text_y - line_height, f"Wait: {avg_wait:.1f}s", white)
+    _ensure_poi("final_queue", text_x, text_y - line_height*2, f"Queue: {avg_q:.2f}", white)
+    _ensure_poi("final_cars", text_x, text_y - line_height*3, f"Cars: {total_cars}", white)
+    
+    # 注释掉车道数据显示，避免画面杂乱
+    # 如果需要显示车道数据，可以取消下面的注释
+    # for tls_id in net.tls_ids:
+    #     for lane in net.lanes[tls_id]:
+    #         avg_lane_q = np.mean(lane_stats[lane]) if lane in lane_stats else 0.0
+    #         shape = traci.lane.getShape(lane)
+    #         if len(shape) >= 2:
+    #             p1, p2 = shape[-2], shape[-1]
+    #             dx, dy = p1[0] - p2[0], p1[1] - p2[1]
+    #             dist = math.hypot(dx, dy)
+    #             offset = min(15.0, dist)
+    #             x = p2[0] + (dx / dist) * offset
+    #             y = p2[1] + (dy / dist) * offset
+    #             text = f"Avg Q: {avg_lane_q:.1f}"
+    #             _ensure_poi(f"final_lane_{lane}", x, y, text)
+
+
+def clear_all_pois():
+    """清理运行过程中产生的动态文本，让最终截图更干净"""
+    for poi_id in list(_poi_ids):
+        try:
+            traci.poi.remove(poi_id)
+        except traci.TraCIException:
+            pass
+    _poi_ids.clear()
+    
+    for poly_id in list(_polygon_ids):
+        try:
+            traci.polygon.remove(poly_id)
+        except traci.TraCIException:
+            pass
+    _polygon_ids.clear()
+
+
 # ======================================================================
 # 加载 DQN 智能体
 # ======================================================================
@@ -441,7 +565,8 @@ def load_dqn_agent(state_dim: int, action_dim: int, scenario: str) -> DQNAgent:
 
     if model_path.exists():
         try:
-            agent.load(str(model_path), weights_only=True)
+            # 直接使用 weights_only=False 加载旧模型（兼容性最好）
+            agent.load(str(model_path), weights_only=False)
             print(f"  已加载模型: {model_path.name}")
         except Exception as e:
             print(f"  模型加载失败: {e}，使用未训练模型")
@@ -477,8 +602,13 @@ def run_fixed_time(
     scenario: str,
     duration: int,
     seed: int,
+    delay: int = 100,
 ) -> List[StepMetrics]:
-    """运行固定配时演示，返回逐步指标。"""
+    """运行固定配时演示，返回逐步指标。
+    
+    参数:
+        delay: SUMO GUI延迟（毫秒）
+    """
     global _pending_arrivals
     _pending_arrivals = 0
     _poi_ids.clear()
@@ -491,7 +621,7 @@ def run_fixed_time(
 
     input("  按 Enter 键启动固定配时演示...")
 
-    start_sumo(scenario, seed)
+    start_sumo(scenario, seed, delay)
     net = get_network_info()
     phase_ctrls = make_phase_controllers(net)
     controller = FixedTimeController(scenario)
@@ -501,6 +631,9 @@ def run_fixed_time(
     sim_time = 0
 
     print("  仿真运行中...\n")
+
+    # 【新增】用于记录每条车道的排队历史
+    lane_stats = {lane: [] for tls_id in net.tls_ids for lane in net.lanes[tls_id]}
 
     while sim_time < duration:
         if traci.simulation.getMinExpectedNumber() <= 0:
@@ -515,6 +648,11 @@ def run_fixed_time(
         m.throughput = cum_throughput
         metrics.append(m)
 
+        # 【新增】记录当前步每条车道的排队长度
+        for tls_id in net.tls_ids:
+            for lane in net.lanes[tls_id]:
+                lane_stats[lane].append(traci.lane.getLastStepHaltingNumber(lane))
+
         update_gui_fixed(sim_time, m, cum_throughput)
 
         if sim_time % 50 < steps_consumed:
@@ -523,8 +661,16 @@ def run_fixed_time(
                   f"排队={m.avg_queue:.1f} | "
                   f"通行量={cum_throughput}")
 
+    # ================= 【新增/修改结尾部分】 =================
+    clear_all_pois()  # 清理动态文字
+    show_final_results_on_map(net, metrics, "固定配时", lane_stats)  # 渲染最终结果
+
+    print("\n  [固定配时] 仿真已完成！请在 SUMO 窗口中查看结果并截图。")
+    input("  截图完成后，请按 Enter 键关闭当前窗口继续...")
+
     traci.close()
     _poi_ids.clear()
+    # =========================================================
 
     if metrics:
         avg_wait = np.mean([m.waiting_time for m in metrics])
@@ -539,11 +685,13 @@ def run_dqn(
     duration: int,
     seed: int,
     baseline_fixed: List[StepMetrics] | None = None,
+    delay: int = 100,
 ) -> List[StepMetrics]:
     """运行 DQN 演示，返回逐步指标。
 
     参数:
         baseline_fixed: 固定配时的逐步指标（用于在 GUI 中对比显示）。
+        delay: SUMO GUI延迟（毫秒）
     """
     global _pending_arrivals
     _pending_arrivals = 0
@@ -567,7 +715,7 @@ def run_dqn(
 
     input("  按 Enter 键启动 DQN 演示...")
 
-    start_sumo(scenario, seed)
+    start_sumo(scenario, seed, delay)
     net = get_network_info()
     is_cascaded = len(net.tls_ids) > 1
     action_dim = 2 ** len(net.tls_ids)
@@ -588,6 +736,9 @@ def run_dqn(
     current_phase_start = 0
 
     print("  仿真运行中...\n")
+
+    # 【新增】记录每条车道的排队历史
+    lane_stats = {lane: [] for tls_id in net.tls_ids for lane in net.lanes[tls_id]}
 
     while sim_time < duration:
         if traci.simulation.getMinExpectedNumber() <= 0:
@@ -610,6 +761,11 @@ def run_dqn(
         m.throughput = cum_throughput
         metrics.append(m)
 
+        # 【新增】记录当前步每条车道的排队长度
+        for tls_id in net.tls_ids:
+            for lane in net.lanes[tls_id]:
+                lane_stats[lane].append(traci.lane.getLastStepHaltingNumber(lane))
+
         # 在 GUI 中显示 DQN 指标 + 固定配时基线对比
         update_gui_dqn(sim_time, m, cum_throughput, fixed_by_step, fixed_cum_tp)
 
@@ -621,8 +777,16 @@ def run_dqn(
                   f"排队={m.avg_queue:.1f} | "
                   f"通行量={cum_throughput}")
 
+    # ================= 【新增/修改结尾部分】 =================
+    clear_all_pois()
+    show_final_results_on_map(net, metrics, "DQN 智能控制", lane_stats)
+
+    print("\n  [DQN 智能控制] 仿真已完成！请在 SUMO 窗口中查看结果并截图。")
+    input("  截图完成后，请按 Enter 键关闭当前窗口继续...")
+
     traci.close()
     _poi_ids.clear()
+    # =========================================================
 
     if metrics:
         avg_wait = np.mean([m.waiting_time for m in metrics])
@@ -767,6 +931,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", type=str, default="both",
                         choices=["fixed", "dqn", "both"],
                         help="演示模式: fixed=仅固定配时, dqn=仅DQN, both=先后对比")
+    parser.add_argument("--delay", type=int, default=100,
+                        help="SUMO GUI延迟（毫秒），默认100ms。设为0则最快速度运行")
     return parser.parse_args()
 
 
@@ -787,12 +953,13 @@ def main() -> None:
 
     # 第一轮：固定配时
     if args.mode in ("fixed", "both"):
-        metrics_fixed = run_fixed_time(args.scenario, args.duration, args.seed)
+        metrics_fixed = run_fixed_time(args.scenario, args.duration, args.seed, args.delay)
 
     # 第二轮：DQN（传入固定配时基线用于 GUI 对比显示）
     if args.mode in ("dqn", "both"):
         metrics_dqn = run_dqn(args.scenario, args.duration, args.seed,
-                              baseline_fixed=metrics_fixed if metrics_fixed else None)
+                              baseline_fixed=metrics_fixed if metrics_fixed else None,
+                              delay=args.delay)
 
     # 对比总结
     if args.mode == "both" and metrics_fixed and metrics_dqn:

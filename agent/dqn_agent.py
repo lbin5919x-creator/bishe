@@ -190,7 +190,7 @@ class DQNAgent:
             path: 模型路径
             weights_only: 仅加载网络权重（用于评估），忽略训练状态
         """
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         # 兼容旧格式（仅含 state_dict）
         if "policy_net" not in checkpoint:
