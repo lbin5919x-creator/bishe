@@ -8,11 +8,13 @@ from typing import Literal
 import torch
 
 from agent.dqn_agent import DQNAgent, AgentConfig
-from config.settings import MODEL_DIR, FIXED_TIME_PLANS, evaluation as eval_cfg, environment as env_cfg, get_device
-from environment.cascaded_env import CascadedSumoEnvironment
+from config.settings import MODEL_DIR, evaluation as eval_cfg, get_device
+from environment.cascaded_env import CascadedStepResult, CascadedSumoEnvironment
+from environment.phase_logic import PhaseController
+from evaluation.fixed_time_controller import FixedTimeController
 from utils import MetricsRecorder
 
-ControllerType = Literal["dqn", "fixed_time", "independent"]
+ControllerType = Literal["dqn", "fixed_time"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", type=str, default="cascaded_intersection",
                         help="场景名称")
     parser.add_argument("--controller", type=str, default="dqn",
-                        choices=["dqn", "fixed_time", "independent"],
+                        choices=["dqn", "fixed_time"],
                         help="控制器类型")
     parser.add_argument("--episodes", type=int, default=eval_cfg.episodes,
                         help="评估回合数")
@@ -30,53 +32,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=get_device(),
                         help="计算设备")
     parser.add_argument("--max-steps", type=int, default=3600,
-                        help="每回合最大步数")
+                        help="每回合最大步数（须 >= 1）")
     parser.add_argument("--gui", action="store_true",
                         help="使用SUMO图形界面")
-    return parser.parse_args()
+    parser.add_argument("--seed", type=int, default=None,
+                        help="SUMO 仿真随机种子")
+    args = parser.parse_args()
+    if args.max_steps < 1:
+        parser.error("--max-steps 须为 >= 1 的整数")
+    return args
 
 
 class CascadedFixedTimeController:
-    """多路口定时控制器。"""
+    """多路口定时控制器（各路口按计划绿灯时长独立决策，联合编码）。"""
 
     def __init__(self, scenario: str, num_junctions: int) -> None:
         """
         初始化定时控制器。
-        
+
         参数:
             scenario: 场景名称
-            num_junctions: 路口数量
+            num_junctions: 路口数量（用于校验）
         """
-        if scenario not in FIXED_TIME_PLANS:
-            raise ValueError(f"场景'{scenario}'没有定义定时方案")
-        self.plan = FIXED_TIME_PLANS[scenario]
-        self.num_phases = len(self.plan)
+        self._inner = FixedTimeController(scenario)
         self.num_junctions = num_junctions
-        self.cycle = sum(self.plan) + self.num_phases * (env_cfg.yellow + env_cfg.all_red)
 
-    def select_action(self, time_step: int) -> int:
-        """
-        选择动作（所有路口同步）。
-        
-        参数:
-            time_step: 当前时间步
-            
-        返回:
-            动作编码（0=保持）
-        """
-        t = time_step % self.cycle
-        elapsed = 0
-        current_phase = 0
-
-        for phase_idx, green in enumerate(self.plan):
-            phase_duration = green + env_cfg.yellow + env_cfg.all_red
-            if t < elapsed + green:
-                current_phase = phase_idx
-                break
-            elapsed += phase_duration
-
-        # 简化处理：大部分时间返回0（保持）
-        return 0
+    def select_action(self, env: CascadedSumoEnvironment) -> int:
+        """根据各路口 PhaseController 状态生成联合动作。"""
+        if env.num_junctions != self.num_junctions:
+            raise ValueError("路口数量与控制器初始化不一致")
+        ctrls: dict[str, PhaseController] = {}
+        for jid in env.junction_ids:
+            pc = env.junctions[jid].phase_controller
+            if pc is None:
+                raise RuntimeError(f"路口 {jid} 未初始化相位控制器")
+            ctrls[jid] = pc
+        return self._inner.joint_action_cascaded(ctrls, env.junction_ids)
 
 
 def evaluate_dqn(
@@ -110,6 +101,7 @@ def evaluate_dqn(
     for ep in range(episodes):
         state = env.reset()
         episode_reward = 0.0
+        result: CascadedStepResult | None = None
 
         for step in range(max_steps):
             action = agent.select_action(state, exploit=True)
@@ -119,6 +111,9 @@ def evaluate_dqn(
 
             if result.done:
                 break
+
+        if result is None:
+            raise RuntimeError("max_steps 为 0 或未执行任何仿真步，无法记录指标")
 
         # 记录最终指标
         metrics = {
@@ -176,14 +171,18 @@ def evaluate_fixed_time(
     for ep in range(episodes):
         env.reset()
         episode_reward = 0.0
+        result: CascadedStepResult | None = None
 
         for step in range(max_steps):
-            action = controller.select_action(step)
+            action = controller.select_action(env)
             result = env.step(action)
             episode_reward += result.reward
 
             if result.done:
                 break
+
+        if result is None:
+            raise RuntimeError("max_steps 为 0 或未执行任何仿真步，无法记录指标")
 
         metrics = {
             "episode": ep,
@@ -217,6 +216,7 @@ def main() -> None:
         scenario=args.scenario,
         max_steps=args.max_steps,
         use_gui=args.gui,
+        seed=args.seed,
     )
 
     # 初始化以获取维度
@@ -237,7 +237,12 @@ def main() -> None:
             device=device,
         )
         agent = DQNAgent(agent_config)
-        agent.load(args.model)
+        try:
+            agent.load(args.model)
+        except (RuntimeError, OSError, FileNotFoundError) as e:
+            print(f"  ⚠️  警告: 无法加载模型 {args.model}")
+            print(f"  错误: {e}")
+            print("  将使用未训练的随机初始化网络进行评估")
         metrics = evaluate_dqn(env, agent, args.episodes, args.max_steps, recorder)
     else:
         controller = CascadedFixedTimeController(args.scenario, env.num_junctions)

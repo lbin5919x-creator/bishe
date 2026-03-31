@@ -11,7 +11,7 @@ from tqdm import tqdm
 from agent import DQNAgent, AgentConfig
 from config.settings import MODEL_DIR, training as train_cfg, environment as env_cfg, get_device
 from environment import SumoEnvironment
-from utils import MetricsRecorder, Transition, set_global_seed
+from utils import MetricsRecorder, Transition, set_global_seed, write_training_run_meta
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,10 +24,18 @@ def parse_args() -> argparse.Namespace:
                         help="训练回合数")
     parser.add_argument("--max-steps", type=int, default=train_cfg.max_steps, 
                         help="每回合最大仿真步数")
-    parser.add_argument("--double-dqn", action="store_true", default=train_cfg.double_dqn, 
-                        help="启用Double DQN")
-    parser.add_argument("--dueling", action="store_true", default=train_cfg.dueling, 
-                        help="使用Dueling网络架构")
+    parser.add_argument(
+        "--double-dqn",
+        action=argparse.BooleanOptionalAction,
+        default=train_cfg.double_dqn,
+        help="启用或关闭 Double DQN（默认启用）",
+    )
+    parser.add_argument(
+        "--dueling",
+        action=argparse.BooleanOptionalAction,
+        default=train_cfg.dueling,
+        help="启用或关闭 Dueling 网络（默认启用）",
+    )
     parser.add_argument("--seed", type=int, default=42, 
                         help="随机种子")
     parser.add_argument("--eval-every", type=int, default=train_cfg.eval_every, 
@@ -48,8 +56,13 @@ def main() -> None:
     set_global_seed(args.seed)
     device = torch.device(args.device)
 
-    # 创建环境
-    env = SumoEnvironment(args.scenario, max_steps=args.max_steps, use_gui=args.gui if hasattr(args, 'gui') else False)
+    # 创建环境（SUMO 与 Python 共用种子以便复现）
+    env = SumoEnvironment(
+        args.scenario,
+        max_steps=args.max_steps,
+        use_gui=args.gui if hasattr(args, "gui") else False,
+        seed=args.seed,
+    )
     state = env.reset()
     state_dim = state.shape[0]
     action_dim = 2  # 二元动作：保持/切换
@@ -68,6 +81,26 @@ def main() -> None:
     metrics_dir = Path("outputs") / args.scenario / "dqn"
     metrics_dir.mkdir(parents=True, exist_ok=True)
     recorder = MetricsRecorder(metrics_dir)
+
+    write_training_run_meta(
+        metrics_dir / "training_run_meta.json",
+        {
+            "script": "training.train_dqn",
+            "scenario": args.scenario,
+            "seed": args.seed,
+            "device": str(device),
+            "torch": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "episodes": args.episodes,
+            "max_steps": args.max_steps,
+            "eval_every": args.eval_every,
+            "double_dqn": args.double_dqn,
+            "dueling": args.dueling,
+            "save_dir": args.save_dir,
+            "state_dim": state_dim,
+            "action_dim": action_dim,
+        },
+    )
 
     best_reward = float("-inf")
 

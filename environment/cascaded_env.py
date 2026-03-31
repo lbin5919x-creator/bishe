@@ -14,7 +14,7 @@ from .phase_logic import PhaseController
 
 @dataclass(slots=True)
 class CascadedStepResult:
-    """多路口环境的步进结果。"""
+    """多路口环境的步进结果。""" 
     state: np.ndarray          # 状态向量
     reward: float              # 总奖励
     done: bool                 # 是否结束
@@ -48,6 +48,7 @@ class CascadedSumoEnvironment:
         max_steps: int = 3600,
         use_gui: bool = False,
         coordination_weight: float = 0.3,
+        seed: int | None = None,
     ) -> None:
         """
         初始化级联环境。
@@ -57,6 +58,7 @@ class CascadedSumoEnvironment:
             max_steps: 每回合最大步数
             use_gui: 是否使用SUMO图形界面
             coordination_weight: 协同奖励权重
+            seed: SUMO 随机种子，None 表示由 SUMO 默认随机
         """
         self.scenario = scenario
         self.use_gui = use_gui
@@ -65,7 +67,8 @@ class CascadedSumoEnvironment:
         
         # 协同控制参数
         self.coordination_weight = coordination_weight  # 下游反馈权重
-        
+        self.seed = seed
+
         # 路口管理
         self.junctions: Dict[str, JunctionInfo] = {}
         self.junction_ids: List[str] = []
@@ -195,14 +198,17 @@ class CascadedSumoEnvironment:
             raise EnvironmentError("未设置SUMO_HOME环境变量。")
         binary = "sumo-gui" if self.use_gui else "sumo"
         sumo_binary = os.path.join(sumo_home, "bin", binary)
-        traci.start([
+        cmd = [
             sumo_binary,
             "-c", self.sumo_cfg,
             "--no-warnings", "true",
             "--no-step-log", "true",
             "--time-to-teleport", "-1",
             "--waiting-time-memory", "1000",
-        ])
+        ]
+        if self.seed is not None:
+            cmd.extend(["--seed", str(self.seed)])
+        traci.start(cmd)
 
     def _retrieve_network_info(self) -> None:
         """获取所有信号灯的信息。"""

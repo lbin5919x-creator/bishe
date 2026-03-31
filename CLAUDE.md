@@ -38,7 +38,7 @@ python -m evaluation.evaluate_cascaded --scenario cascaded_intersection --contro
 python -m utils.plot_metrics --csv outputs/t_intersection/dqn/training_metrics.csv
 
 # 一键运行所有实验（训练+评估+报告）
-python quick_run.py all
+python train_all.py
 ```
 
 训练可选参数：`--double-dqn`、`--dueling`、`--eval-every 20`、`--gui`（SUMO可视化）、`--coordination-weight 0.3`（仅级联场景）。

@@ -88,21 +88,21 @@ class DQNAgent:
         """
         选择动作（ε-贪婪策略）。
 
-        探索率由 decay_epsilon() 统一按回合衰减，此处直接使用 self.epsilon。
+        训练时探索率由 decay_epsilon() 按回合衰减；exploit=True 时为纯贪心（ε=0）。
 
         参数:
             state: 当前状态
-            exploit: 是否使用利用模式（低探索率）
+            exploit: 是否评估模式（不探索）
 
         返回:
             选择的动作
         """
         self.steps_done += 1
 
-        # 探索率由 decay_epsilon() 统一管理
-        eps_threshold = self.epsilon_end if exploit else self.epsilon
+        # 评估(exploit)时纯贪心；训练时由 decay_epsilon() 与 self.epsilon 控制探索
+        eps_threshold = 0.0 if exploit else self.epsilon
 
-        # ε-贪婪：以eps概率随机探索
+        # ε-贪婪：以 eps 概率随机探索
         if np.random.rand() < eps_threshold:
             return np.random.randint(0, self.config.action_dim)
 

@@ -203,17 +203,18 @@ class SumoEnvironment:
     def _get_state(self) -> np.ndarray:
         """获取当前状态向量。"""
         state_features: List[float] = []
+        # 1. 遍历所有受控车道，提取微观特征
         for lane in self.lanes:
             queue_length = traci.lane.getLastStepHaltingNumber(lane)  # 排队长度
             occupancy = traci.lane.getLastStepOccupancy(lane)         # 占用率
             state_features.extend([queue_length, occupancy])
 
-        # 相位独热编码
+        # 2. 提取时序特征：对当前信号灯相位进行独热(One-hot)编码
         phase_one_hot = np.zeros(len(self.phases), dtype=np.float32)
         if self.phase_controller:
             phase_one_hot[self.phase_controller.current_phase] = 1.0
         state_features.extend(phase_one_hot.tolist())
-
+        # 3. 将状态向量转化为NumPy数组，并缩放至[0,1]区间
         state = np.array(state_features, dtype=np.float32)
         return self._normalize_state(state)
 

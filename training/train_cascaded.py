@@ -11,7 +11,7 @@ from tqdm import tqdm
 from agent.dqn_agent import DQNAgent, AgentConfig
 from config.settings import MODEL_DIR, training as train_cfg, get_device
 from environment.cascaded_env import CascadedSumoEnvironment
-from utils import MetricsRecorder, Transition, set_global_seed
+from utils import MetricsRecorder, Transition, set_global_seed, write_training_run_meta
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,12 +23,20 @@ def parse_args() -> argparse.Namespace:
                         help="训练回合数")
     parser.add_argument("--max-steps", type=int, default=3600,
                         help="每回合最大步数")
-    parser.add_argument("--double-dqn", action="store_true", default=True,
-                        help="启用Double DQN")
-    parser.add_argument("--dueling", action="store_true", default=True,
-                        help="使用Dueling网络架构")
+    parser.add_argument(
+        "--double-dqn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="启用或关闭 Double DQN（默认启用）",
+    )
+    parser.add_argument(
+        "--dueling",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="启用或关闭 Dueling 网络（默认启用）",
+    )
     parser.add_argument("--seed", type=int, default=42,
-                        help="随机种子")
+                        help="随机种子（Python 与 SUMO）")
     parser.add_argument("--eval-every", type=int, default=25,
                         help="评估频率")
     parser.add_argument("--device", type=str, default=get_device(),
@@ -54,6 +62,7 @@ def main() -> None:
         max_steps=args.max_steps,
         use_gui=args.gui,
         coordination_weight=args.coordination_weight,
+        seed=args.seed,
     )
 
     # 初始化环境以获取维度
@@ -82,6 +91,30 @@ def main() -> None:
     metrics_dir = Path("outputs") / args.scenario / "dqn_cascaded"
     metrics_dir.mkdir(parents=True, exist_ok=True)
     recorder = MetricsRecorder(metrics_dir)
+
+    write_training_run_meta(
+        metrics_dir / "training_run_meta.json",
+        {
+            "script": "training.train_cascaded",
+            "scenario": args.scenario,
+            "seed": args.seed,
+            "device": str(device),
+            "torch": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "episodes": args.episodes,
+            "max_steps": args.max_steps,
+            "eval_every": args.eval_every,
+            "double_dqn": args.double_dqn,
+            "dueling": args.dueling,
+            "coordination_weight": args.coordination_weight,
+            "save_dir": args.save_dir,
+            "num_junctions": env.num_junctions,
+            "junction_ids": env.junction_ids,
+            "state_dim": state_dim,
+            "action_dim": action_dim,
+            "link_edges": env.link_edges,
+        },
+    )
 
     best_reward = float("-inf")
 

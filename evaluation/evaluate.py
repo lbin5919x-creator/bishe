@@ -9,7 +9,7 @@ import torch
 
 from agent import DQNAgent, AgentConfig
 from config.settings import MODEL_DIR, evaluation as eval_cfg, get_device
-from environment import SumoEnvironment
+from environment import StepResult, SumoEnvironment
 from evaluation.fixed_time_controller import FixedTimeController
 from utils import MetricsRecorder
 
@@ -35,7 +35,12 @@ def parse_args() -> argparse.Namespace:
                         help="每回合最大步数")
     parser.add_argument("--gui", action="store_true",
                         help="使用SUMO图形界面")
-    return parser.parse_args()
+    parser.add_argument("--seed", type=int, default=None,
+                        help="SUMO 仿真随机种子（默认可复现训练脚本时请与训练一致）")
+    args = parser.parse_args()
+    if args.max_steps < 1:
+        parser.error("--max-steps 须为 >= 1 的整数")
+    return args
 
 
 def evaluate_dqn(
@@ -68,7 +73,8 @@ def evaluate_dqn(
     for ep in range(episodes):
         state = env.reset()
         episode_reward = 0.0
-        
+        result: StepResult | None = None
+
         for step in range(max_steps):
             action = agent.select_action(state, exploit=True)
             result = env.step(action)
@@ -76,6 +82,9 @@ def evaluate_dqn(
             state = result.state
             if result.done:
                 break
+
+        if result is None:
+            raise RuntimeError("max_steps 为 0 或未执行任何仿真步，无法记录指标")
 
         # 记录指标
         metrics = {
@@ -131,13 +140,21 @@ def evaluate_fixed_time(
     for ep in range(episodes):
         env.reset()
         episode_reward = 0.0
-        
+        assert env.phase_controller is not None
+        result: StepResult | None = None
+
         for step in range(max_steps):
-            action = controller.select_action(step)
+            action = controller.select_action(
+                env.phase_controller.current_phase,
+                env.phase_controller.elapsed,
+            )
             result = env.step(action)
             episode_reward += result.reward
             if result.done:
                 break
+
+        if result is None:
+            raise RuntimeError("max_steps 为 0 或未执行任何仿真步，无法记录指标")
 
         metrics = {
             "episode": ep,
@@ -167,7 +184,12 @@ def main() -> None:
     device = torch.device(args.device)
 
     # 创建环境
-    env = SumoEnvironment(args.scenario, max_steps=args.max_steps, use_gui=args.gui if hasattr(args, 'gui') else False)
+    env = SumoEnvironment(
+        args.scenario,
+        max_steps=args.max_steps,
+        use_gui=args.gui if hasattr(args, "gui") else False,
+        seed=args.seed,
+    )
     
     # 初始化以获取维度
     state = env.reset()

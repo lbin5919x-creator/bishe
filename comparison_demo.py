@@ -435,7 +435,7 @@ def update_gui_dqn(
                 f"DQN   >> Wait={m_dqn.waiting_time:.0f}s | "
                 f"Queue={m_dqn.avg_queue:.1f} | Cars={cum_tp_dqn}")
 
-    # 第3-5行：如果有固定配时基线，显示对比
+    # 第3行：如果有固定配时基线，显示对比（移除改善率显示）
     if baseline_fixed is not None and cum_tp_fixed_map is not None:
         # 找最接近当前时间步的基线数据
         closest_step = min(baseline_fixed.keys(), key=lambda s: abs(s - step), default=None)
@@ -446,29 +446,12 @@ def update_gui_dqn(
             _ensure_poi("line3", base_x, base_y - 30,
                         f"Fixed >> Wait={m_f.waiting_time:.0f}s | "
                         f"Queue={m_f.avg_queue:.1f} | Cars={cum_f}")
-
-            # 改善率
-            wait_imp = ((m_f.waiting_time - m_dqn.waiting_time)
-                        / m_f.waiting_time * 100) if m_f.waiting_time > 0 else 0
-            queue_imp = ((m_f.avg_queue - m_dqn.avg_queue)
-                         / m_f.avg_queue * 100) if m_f.avg_queue > 0 else 0
-            cars_imp = ((cum_tp_dqn - cum_f) / cum_f * 100) if cum_f > 0 else 0
-
-            wait_arrow = "v" if wait_imp > 0 else "^"
-            queue_arrow = "v" if queue_imp > 0 else "^"
-            cars_arrow = "^" if cars_imp > 0 else "v"
-
-            _ensure_poi("line4", base_x, base_y - 45,
-                        f"Improve >> Wait {wait_imp:+.1f}%{wait_arrow} | "
-                        f"Queue {queue_imp:+.1f}%{queue_arrow} | "
-                        f"Cars {cars_imp:+.1f}%{cars_arrow}")
         else:
             _ensure_poi("line3", base_x, base_y - 30, "Fixed >> (no baseline data)")
-            _ensure_poi("line4", base_x, base_y - 45, "")
 
 
 def show_final_results_on_map(net: NetworkInfo, metrics: List[StepMetrics], title: str, lane_stats: Dict[str, List[float]]) -> None:
-    """在仿真结束后，将最终结果直接打在 SUMO 地图上（自适应排版）。"""
+    """在仿真结束后，将最终结果直接打在 SUMO 地图上（英文显示，大字体）。"""
     if not metrics:
         return
 
@@ -477,42 +460,41 @@ def show_final_results_on_map(net: NetworkInfo, metrics: List[StepMetrics], titl
     avg_q = np.mean([m.avg_queue for m in metrics])
     total_cars = metrics[-1].throughput
 
-    # ================= 核心修改：动态计算面板位置 =================
-    # 获取当前路网的边界坐标：((xmin, ymin), (xmax, ymax))
+    # 动态计算面板位置
     boundary = traci.simulation.getNetBoundary()
     xmin, ymin = boundary[0]
     xmax, ymax = boundary[1]
 
-    box_width = 110
-    box_height = 85
+    # 面板尺寸
+    box_width = 80
+    box_height = 40
     
-    # 将面板放置在【右上角空白处】，稍微往左调整
-    box_x = xmax - box_width - 10
+    # 将面板放置在【左侧位置】
+    box_x = xmin + 55  # 往左移动
     box_y = ymax - 10
-    # ==============================================================
 
-    # 根据类型选择不同颜色
+    # 白色背景 + 黑色文字
     if "固定" in title or "FIXED" in title.upper():
-        bg_color = (220, 50, 50, 200)  # 红色系 - 固定配时
-        title_en = "FIXED"
+        title_text = "FIXED"
     else:
-        bg_color = (50, 150, 50, 200)  # 绿色系 - DQN
-        title_en = "DQN"
+        title_text = "DQN"
     
-    # 创建彩色背景框
+    bg_color = (255, 255, 255, 250)  # 白色背景
+    text_color = (0, 0, 0, 255)  # 黑色文字
+    
+    # 创建白色背景框
     _add_text_box("result_box", box_x, box_y, box_width, box_height, "", bg_color)
     
-    # 面板文字坐标（相对于背景框）
+    # 面板文字坐标
     text_x = box_x + 15
-    text_y = box_y - 12
-    line_height = 14
-    white = (255, 255, 255, 255)
+    text_y = box_y - 15
+    line_height = 23
     
-    # 显示结果（简化格式）
-    _ensure_poi("final_title", text_x, text_y, f"===== {title_en} =====", white)
-    _ensure_poi("final_wait", text_x, text_y - line_height, f"Wait: {avg_wait:.1f}s", white)
-    _ensure_poi("final_queue", text_x, text_y - line_height*2, f"Queue: {avg_q:.2f}", white)
-    _ensure_poi("final_cars", text_x, text_y - line_height*3, f"Cars: {total_cars}", white)
+    # 显示结果（英文，大字体，清晰缩写）
+    _ensure_poi("final_title", text_x, text_y, f"== {title_text} ==", text_color)
+    _ensure_poi("final_wait", text_x, text_y - line_height, f"Wait: {avg_wait:.0f}s", text_color)
+    _ensure_poi("final_queue", text_x, text_y - line_height*2, f"Queue: {avg_q:.1f}", text_color)
+    _ensure_poi("final_cars", text_x, text_y - line_height*3, f"Cars: {total_cars}", text_color)
     
     # 注释掉车道数据显示，避免画面杂乱
     # 如果需要显示车道数据，可以取消下面的注释
@@ -639,7 +621,12 @@ def run_fixed_time(
         if traci.simulation.getMinExpectedNumber() <= 0:
             break
 
-        action = controller.select_action(sim_time)
+        if len(net.tls_ids) == 1:
+            tls_id = net.tls_ids[0]
+            ctrl = phase_ctrls[tls_id]
+            action = controller.select_action(ctrl.current_phase, ctrl.elapsed)
+        else:
+            action = controller.joint_action_cascaded(phase_ctrls, list(net.tls_ids))
         steps_consumed = apply_action(action, net, phase_ctrls)
         sim_time += steps_consumed
 
@@ -653,7 +640,7 @@ def run_fixed_time(
             for lane in net.lanes[tls_id]:
                 lane_stats[lane].append(traci.lane.getLastStepHaltingNumber(lane))
 
-        update_gui_fixed(sim_time, m, cum_throughput)
+        # update_gui_fixed(sim_time, m, cum_throughput)  # 已禁用GUI实时显示
 
         if sim_time % 50 < steps_consumed:
             print(f"    t={sim_time:>4d}s | "
@@ -767,7 +754,7 @@ def run_dqn(
                 lane_stats[lane].append(traci.lane.getLastStepHaltingNumber(lane))
 
         # 在 GUI 中显示 DQN 指标 + 固定配时基线对比
-        update_gui_dqn(sim_time, m, cum_throughput, fixed_by_step, fixed_cum_tp)
+        # update_gui_dqn(sim_time, m, cum_throughput, fixed_by_step, fixed_cum_tp)  # 已禁用GUI实时显示
 
         if sim_time % 50 < steps_consumed:
             act_str = "切换" if action == 1 else "保持"
@@ -810,45 +797,84 @@ def plot_comparison(
     scenario: str,
     output_dir: Path,
 ) -> None:
-    """生成时间序列对比图 + 汇总柱状图。"""
+    """生成时间序列对比图 + 汇总柱状图（黑白打印友好，紧凑布局）。"""
+    # 设置紧凑打印参数
     plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
     plt.rcParams['axes.unicode_minus'] = False
+    plt.rcParams['font.size'] = 8
+    plt.rcParams['axes.labelsize'] = 9
+    plt.rcParams['axes.titlesize'] = 10
+    plt.rcParams['xtick.labelsize'] = 7
+    plt.rcParams['ytick.labelsize'] = 7
+    plt.rcParams['legend.fontsize'] = 8
+    plt.rcParams['lines.linewidth'] = 1.8
 
     df_f = pd.DataFrame([vars(m) for m in metrics_fixed])
     df_d = pd.DataFrame([vars(m) for m in metrics_dqn])
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(f'固定配时 vs DQN 对比 — {scenario}', fontsize=14, fontweight='bold')
+    # 紧凑尺寸
+    fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
+    fig.suptitle(f'固定配时 vs DQN 对比 — {scenario}', fontsize=11, fontweight='bold')
 
     # 1. 等待时间时间序列
     ax = axes[0, 0]
-    ax.plot(df_f['step'], df_f['waiting_time'], label='固定配时', alpha=0.7, color='red')
-    ax.plot(df_d['step'], df_d['waiting_time'], label='DQN', alpha=0.7, color='green')
-    ax.set_xlabel('仿真时间 (s)')
-    ax.set_ylabel('等待时间 (s)')
-    ax.set_title('实时等待时间')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.plot(df_f['step'], df_f['waiting_time'], label='固定配时',
+            linewidth=2.2, color='black', linestyle='-', marker='o',
+            markevery=len(df_f)//8, markersize=5, markerfacecolor='white',
+            markeredgewidth=1.5, markeredgecolor='black')
+    ax.plot(df_d['step'], df_d['waiting_time'], label='DQN',
+            linewidth=1.8, color='black', linestyle='--', marker='s',
+            markevery=len(df_d)//8, markersize=4, markerfacecolor='black')
+    ax.set_xlabel('仿真时间 (s)', fontsize=9, fontweight='bold')
+    ax.set_ylabel('等待时间 (s)', fontsize=9, fontweight='bold')
+    ax.set_title('实时等待时间', fontsize=10, fontweight='bold', pad=5)
+    ax.legend(loc='best', frameon=True, shadow=False, fontsize=8,
+              edgecolor='black', fancybox=False)
+    ax.grid(True, alpha=0.25, linestyle=':', linewidth=0.8, color='gray')
+    ax.spines['top'].set_linewidth(1.5)
+    ax.spines['right'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.spines['left'].set_linewidth(1.5)
 
     # 2. 排队长度时间序列
     ax = axes[0, 1]
-    ax.plot(df_f['step'], df_f['avg_queue'], label='固定配时', alpha=0.7, color='red')
-    ax.plot(df_d['step'], df_d['avg_queue'], label='DQN', alpha=0.7, color='green')
-    ax.set_xlabel('仿真时间 (s)')
-    ax.set_ylabel('平均排队长度')
-    ax.set_title('实时排队长度')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.plot(df_f['step'], df_f['avg_queue'], label='固定配时',
+            linewidth=2.2, color='black', linestyle='-', marker='o',
+            markevery=len(df_f)//8, markersize=5, markerfacecolor='white',
+            markeredgewidth=1.5, markeredgecolor='black')
+    ax.plot(df_d['step'], df_d['avg_queue'], label='DQN',
+            linewidth=1.8, color='black', linestyle='--', marker='s',
+            markevery=len(df_d)//8, markersize=4, markerfacecolor='black')
+    ax.set_xlabel('仿真时间 (s)', fontsize=9, fontweight='bold')
+    ax.set_ylabel('平均排队长度', fontsize=9, fontweight='bold')
+    ax.set_title('实时排队长度', fontsize=10, fontweight='bold', pad=5)
+    ax.legend(loc='best', frameon=True, shadow=False, fontsize=8,
+              edgecolor='black', fancybox=False)
+    ax.grid(True, alpha=0.25, linestyle=':', linewidth=0.8, color='gray')
+    ax.spines['top'].set_linewidth(1.5)
+    ax.spines['right'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.spines['left'].set_linewidth(1.5)
 
     # 3. 累计通行量
     ax = axes[1, 0]
-    ax.plot(df_f['step'], df_f['throughput'], label='固定配时', alpha=0.7, color='red')
-    ax.plot(df_d['step'], df_d['throughput'], label='DQN', alpha=0.7, color='green')
-    ax.set_xlabel('仿真时间 (s)')
-    ax.set_ylabel('累计通行量')
-    ax.set_title('累计通行量')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.plot(df_f['step'], df_f['throughput'], label='固定配时',
+            linewidth=2.2, color='black', linestyle='-', marker='o',
+            markevery=len(df_f)//8, markersize=5, markerfacecolor='white',
+            markeredgewidth=1.5, markeredgecolor='black')
+    ax.plot(df_d['step'], df_d['throughput'], label='DQN',
+            linewidth=1.8, color='black', linestyle='--', marker='s',
+            markevery=len(df_d)//8, markersize=4, markerfacecolor='black')
+    ax.set_xlabel('仿真时间 (s)', fontsize=9, fontweight='bold')
+    ax.set_ylabel('累计通行量', fontsize=9, fontweight='bold')
+    ax.set_title('累计通行量', fontsize=10, fontweight='bold', pad=5)
+    ax.legend(loc='best', frameon=True, shadow=False, fontsize=8,
+              edgecolor='black', fancybox=False)
+    ax.grid(True, alpha=0.25, linestyle=':', linewidth=0.8, color='gray')
+    ax.spines['top'].set_linewidth(1.5)
+    ax.spines['right'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.spines['left'].set_linewidth(1.5)
 
     # 4. 汇总柱状图
     ax = axes[1, 1]
@@ -860,30 +886,50 @@ def plot_comparison(
     avg_q_f = np.mean([m.avg_queue for m in metrics_fixed]) if metrics_fixed else 0
     avg_q_d = np.mean([m.avg_queue for m in metrics_dqn]) if metrics_dqn else 0
 
-    labels = ['平均等待时间', '平均排队', '总通行量']
+    labels = ['平均等待', '平均排队', '总通行量']
     vals_f = [avg_wait_f, avg_q_f, final_f.throughput]
     vals_d = [avg_wait_d, avg_q_d, final_d.throughput]
 
     x = np.arange(len(labels))
-    w = 0.35
-    bars1 = ax.bar(x - w/2, vals_f, w, label='固定配时', color='salmon', alpha=0.8)
-    bars2 = ax.bar(x + w/2, vals_d, w, label='DQN', color='mediumseagreen', alpha=0.8)
+    w = 0.32
+    bars1 = ax.bar(x - w/2, vals_f, w, label='固定配时',
+                   color='white', edgecolor='black', linewidth=2.0,
+                   hatch='///')
+    bars2 = ax.bar(x + w/2, vals_d, w, label='DQN',
+                   color='0.6', edgecolor='black', linewidth=2.0,
+                   hatch='')
     ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    ax.set_title('最终指标对比')
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_xticklabels(labels, fontsize=8, fontweight='bold')
+    ax.set_title('最终指标对比', fontsize=10, fontweight='bold', pad=5)
+    ax.legend(loc='best', frameon=True, shadow=False, fontsize=8,
+              edgecolor='black', fancybox=False)
+    ax.grid(True, alpha=0.25, axis='y', linestyle=':', linewidth=0.8, color='gray')
+    ax.spines['top'].set_linewidth(1.5)
+    ax.spines['right'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.spines['left'].set_linewidth(1.5)
+    
+    # 数值标注
     for bar_group in (bars1, bars2):
         for bar in bar_group:
             h = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2, h, f'{h:.1f}',
-                    ha='center', va='bottom', fontsize=9)
+                    ha='center', va='bottom', fontsize=8, fontweight='bold',
+                    color='black')
 
-    plt.tight_layout()
+    plt.tight_layout(pad=1.5, h_pad=2.0, w_pad=2.0)
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f'comparison_{scenario}.png'
-    plt.savefig(path, dpi=150, bbox_inches='tight')
-    print(f"\n  对比图表已保存: {path}")
+    
+    # 保存高分辨率图片（黑白打印友好）
+    path_png = output_dir / f'comparison_{scenario}.png'
+    path_pdf = output_dir / f'comparison_{scenario}.pdf'
+    
+    plt.savefig(path_png, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(path_pdf, bbox_inches='tight', facecolor='white')
+    
+    print(f"\n  对比图表已保存（黑白打印友好）:")
+    print(f"    PNG (300 DPI): {path_png}")
+    print(f"    PDF (矢量图): {path_pdf}")
     plt.show()
 
 
