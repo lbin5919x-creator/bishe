@@ -76,8 +76,10 @@ class CascadedSumoEnvironment:
         
         self.time_step: int = 0
         self.prev_total_wait: float = 0.0
-        self.total_throughput: int = 0
+        self.total_throughput: int = 0   # 累计通行量(arrived)
+        self.total_departed: int = 0     # 累计发车量(departed)
         self._pending_arrivals: int = 0
+        self._pending_departed: int = 0
 
     @property
     def num_junctions(self) -> int:
@@ -108,7 +110,9 @@ class CascadedSumoEnvironment:
         
         self.time_step = 0
         self.total_throughput = 0
+        self.total_departed = 0
         self._pending_arrivals = 0
+        self._pending_departed = 0
         for junction in self.junctions.values():
             if junction.phase_controller:
                 junction.phase_controller.reset()
@@ -151,6 +155,7 @@ class CascadedSumoEnvironment:
         else:
             traci.simulationStep()
             self._pending_arrivals += traci.simulation.getArrivedNumber()
+            self._pending_departed += traci.simulation.getDepartedNumber()
             self.time_step += 1
 
         # 计算奖励
@@ -296,6 +301,7 @@ class CascadedSumoEnvironment:
         for _ in range(env_cfg.yellow):
             traci.simulationStep()
             self._pending_arrivals += traci.simulation.getArrivedNumber()
+            self._pending_departed += traci.simulation.getDepartedNumber()
 
         # 2. 全红保护：所有方向红灯，确保路口清空
         for junction, current_state, _ in transitions:
@@ -304,6 +310,7 @@ class CascadedSumoEnvironment:
         for _ in range(env_cfg.all_red):
             traci.simulationStep()
             self._pending_arrivals += traci.simulation.getArrivedNumber()
+            self._pending_departed += traci.simulation.getDepartedNumber()
 
         # 3. 切换到下一绿灯相位（用 setRedYellowGreenState 避免内联程序相位越界）
         for junction, _, next_idx in transitions:
@@ -313,6 +320,7 @@ class CascadedSumoEnvironment:
             junction.phase_controller.elapsed = 0
         traci.simulationStep()
         self._pending_arrivals += traci.simulation.getArrivedNumber()
+        self._pending_departed += traci.simulation.getDepartedNumber()
 
         return env_cfg.yellow + env_cfg.all_red + 1
 
@@ -500,15 +508,21 @@ class CascadedSumoEnvironment:
                 for i in range(lanes)
             )
         
-        # 累计通行量（包含相位过渡期间的到达车辆）
+        # 累计通行量/发车量（包含相位过渡期间）
         self.total_throughput += self._pending_arrivals
+        self.total_departed += self._pending_departed
         self._pending_arrivals = 0
-        
+        self._pending_departed = 0
+
+        unfinished = max(self.total_departed - self.total_throughput, 0)
+
         return {
             "waiting_time": total_wait,      # 总等待时间
             "avg_queue": total_queue / max(num_lanes, 1),  # 平均排队长度
             "link_queue": link_queue,        # 连接路排队
-            "throughput": self.total_throughput,  # 累计通行量
+            "throughput": self.total_throughput,  # 累计通行量(arrived)
+            "departed": self.total_departed,      # 累计发车量(departed)
+            "unfinished": unfinished,             # 未完成车辆
             "time": self.time_step * env_cfg.time_step,  # 仿真时间
         }
 

@@ -33,10 +33,12 @@ def parse_args() -> argparse.Namespace:
                         help="计算设备")
     parser.add_argument("--max-steps", type=int, default=3600,
                         help="每回合最大步数")
+    parser.add_argument("--strict-model", action="store_true",
+                        help="严格模型加载：加载失败即报错退出（推荐正式对比）")
     parser.add_argument("--gui", action="store_true",
                         help="使用SUMO图形界面")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="SUMO 仿真随机种子（默认可复现训练脚本时请与训练一致）")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="SUMO 仿真随机种子（默认42，确保可复现与公平对比）")
     args = parser.parse_args()
     if args.max_steps < 1:
         parser.error("--max-steps 须为 >= 1 的整数")
@@ -44,11 +46,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def evaluate_dqn(
-    env: SumoEnvironment, 
-    agent: DQNAgent, 
-    episodes: int, 
-    max_steps: int, 
-    recorder: MetricsRecorder
+    env: SumoEnvironment,
+    agent: DQNAgent,
+    episodes: int,
+    max_steps: int,
+    recorder: MetricsRecorder,
+    seed_start: int,
 ) -> dict:
     """
     评估DQN控制器。
@@ -67,10 +70,13 @@ def evaluate_dqn(
         "waiting_time": 0.0,
         "throughput": 0,
         "avg_queue": 0.0,
+        "departed": 0,
+        "unfinished": 0,
         "reward": 0.0,
     }
 
     for ep in range(episodes):
+        env.seed = seed_start + ep
         state = env.reset()
         episode_reward = 0.0
         result: StepResult | None = None
@@ -97,11 +103,15 @@ def evaluate_dqn(
         total_metrics["waiting_time"] += result.info.get("waiting_time", 0)
         total_metrics["throughput"] += result.info.get("throughput", 0)
         total_metrics["avg_queue"] += result.info.get("avg_queue", 0)
+        total_metrics["departed"] += result.info.get("departed", 0)
+        total_metrics["unfinished"] += result.info.get("unfinished", 0)
         total_metrics["reward"] += episode_reward
 
-        print(f"回合 {ep + 1}/{episodes} | 奖励: {episode_reward:.2f} | "
+        print(f"回合 {ep + 1}/{episodes} | seed={seed_start + ep} | 奖励: {episode_reward:.2f} | "
               f"等待时间: {result.info.get('waiting_time', 0):.1f} | "
-              f"通行量: {result.info.get('throughput', 0)}")
+              f"到达: {result.info.get('throughput', 0)} | "
+              f"发车: {result.info.get('departed', 0)} | "
+              f"未完成: {result.info.get('unfinished', 0)}")
 
     # 计算平均值
     for key in total_metrics:
@@ -111,11 +121,12 @@ def evaluate_dqn(
 
 
 def evaluate_fixed_time(
-    env: SumoEnvironment, 
-    controller: FixedTimeController, 
-    episodes: int, 
-    max_steps: int, 
-    recorder: MetricsRecorder
+    env: SumoEnvironment,
+    controller: FixedTimeController,
+    episodes: int,
+    max_steps: int,
+    recorder: MetricsRecorder,
+    seed_start: int,
 ) -> dict:
     """
     评估定时控制器。
@@ -134,10 +145,13 @@ def evaluate_fixed_time(
         "waiting_time": 0.0,
         "throughput": 0,
         "avg_queue": 0.0,
+        "departed": 0,
+        "unfinished": 0,
         "reward": 0.0,
     }
 
     for ep in range(episodes):
+        env.seed = seed_start + ep
         env.reset()
         episode_reward = 0.0
         assert env.phase_controller is not None
@@ -166,11 +180,15 @@ def evaluate_fixed_time(
         total_metrics["waiting_time"] += result.info.get("waiting_time", 0)
         total_metrics["throughput"] += result.info.get("throughput", 0)
         total_metrics["avg_queue"] += result.info.get("avg_queue", 0)
+        total_metrics["departed"] += result.info.get("departed", 0)
+        total_metrics["unfinished"] += result.info.get("unfinished", 0)
         total_metrics["reward"] += episode_reward
 
-        print(f"回合 {ep + 1}/{episodes} | 奖励: {episode_reward:.2f} | "
+        print(f"回合 {ep + 1}/{episodes} | seed={seed_start + ep} | 奖励: {episode_reward:.2f} | "
               f"等待时间: {result.info.get('waiting_time', 0):.1f} | "
-              f"通行量: {result.info.get('throughput', 0)}")
+              f"到达: {result.info.get('throughput', 0)} | "
+              f"发车: {result.info.get('departed', 0)} | "
+              f"未完成: {result.info.get('unfinished', 0)}")
 
     for key in total_metrics:
         total_metrics[key] /= episodes
@@ -182,6 +200,9 @@ def main() -> None:
     """主评估函数。"""
     args = parse_args()
     device = torch.device(args.device)
+
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("你指定了 --device cuda，但当前PyTorch未检测到可用CUDA设备。")
 
     # 创建环境
     env = SumoEnvironment(
@@ -228,15 +249,22 @@ def main() -> None:
         # 尝试加载模型，如果失败则警告
         try:
             agent.load(args.model)
-        except RuntimeError as e:
-            print(f"  ⚠️  警告: 无法加载模型 {args.model}")
+        except (RuntimeError, OSError, FileNotFoundError) as e:
+            print(f"  模型加载失败: {args.model}")
             print(f"  错误: {e}")
-            print(f"  将使用未训练的模型进行评估")
-        
-        metrics = evaluate_dqn(env, agent, args.episodes, args.max_steps, recorder)
+            if args.strict_model:
+                env.close()
+                raise RuntimeError("严格模式下模型加载失败，评估已中止。") from e
+            print("  ⚠️ 将使用未训练模型继续评估（仅用于调试，不建议用于论文对比）")
+
+        metrics = evaluate_dqn(
+            env, agent, args.episodes, args.max_steps, recorder, seed_start=args.seed
+        )
     else:
         controller = FixedTimeController(args.scenario)
-        metrics = evaluate_fixed_time(env, controller, args.episodes, args.max_steps, recorder)
+        metrics = evaluate_fixed_time(
+            env, controller, args.episodes, args.max_steps, recorder, seed_start=args.seed
+        )
 
     recorder.flush(f"{args.controller}_metrics.csv")
     env.close()

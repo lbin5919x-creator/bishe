@@ -56,6 +56,14 @@ def main() -> None:
     set_global_seed(args.seed)
     device = torch.device(args.device)
 
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("你指定了 --device cuda，但当前PyTorch未检测到可用CUDA设备。")
+
+    if device.type == "cuda":
+        print(f"使用GPU训练: {torch.cuda.get_device_name(device)}")
+    else:
+        print("使用CPU训练")
+
     # 创建环境（SUMO 与 Python 共用种子以便复现）
     env = SumoEnvironment(
         args.scenario,
@@ -149,6 +157,8 @@ def main() -> None:
             "waiting_time": result.info.get("waiting_time", 0),
             "avg_queue": result.info.get("avg_queue", 0),
             "throughput": result.info.get("throughput", 0),
+            "departed": result.info.get("departed", 0),
+            "unfinished": result.info.get("unfinished", 0),
         }
         if avg_loss is not None:
             metrics["loss"] = avg_loss

@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,7 +30,6 @@ except:
 
 from agent.dqn_agent import DQNAgent, AgentConfig
 from config.settings import (
-    FIXED_TIME_PLANS,
     MODEL_DIR,
     SCENARIO_DIR,
     environment as env_cfg,
@@ -61,6 +59,8 @@ class StepMetrics:
     waiting_time: float
     avg_queue: float
     throughput: int
+    departed: int
+    unfinished: int
     action: int
 
 
@@ -208,13 +208,15 @@ def get_state(net: NetworkInfo, phase_ctrls: Dict[str, PhaseController]) -> np.n
 # ======================================================================
 
 _pending_arrivals: int = 0
+_pending_departed: int = 0
 
 
 def _sim_step() -> None:
-    """执行一步仿真并累计到达车辆数。"""
-    global _pending_arrivals
+    """执行一步仿真并累计到达/发车车辆数。"""
+    global _pending_arrivals, _pending_departed
     traci.simulationStep()
     _pending_arrivals += traci.simulation.getArrivedNumber()
+    _pending_departed += traci.simulation.getDepartedNumber()
 
 
 def _flush_arrivals() -> int:
@@ -222,6 +224,14 @@ def _flush_arrivals() -> int:
     global _pending_arrivals
     count = _pending_arrivals
     _pending_arrivals = 0
+    return count
+
+
+def _flush_departed() -> int:
+    """读取并清零累计发车车辆数。"""
+    global _pending_departed
+    count = _pending_departed
+    _pending_departed = 0
     return count
 
 
@@ -336,7 +346,13 @@ def apply_action(
 # 指标采集 & GUI 文字
 # ======================================================================
 
-def collect_metrics(net: NetworkInfo, step: int, action: int) -> StepMetrics:
+def collect_metrics(
+    net: NetworkInfo,
+    step: int,
+    action: int,
+    cum_arrived: int,
+    cum_departed: int,
+) -> StepMetrics:
     """采集当前步的交通指标。"""
     total_wait = 0.0
     total_queue = 0.0
@@ -347,12 +363,15 @@ def collect_metrics(net: NetworkInfo, step: int, action: int) -> StepMetrics:
         for lane in net.lanes[tls_id]:
             total_queue += traci.lane.getLastStepHaltingNumber(lane)
             num_lanes += 1
-    throughput = _flush_arrivals()
+
+    unfinished = max(cum_departed - cum_arrived, 0)
     return StepMetrics(
         step=step,
         waiting_time=total_wait,
         avg_queue=total_queue / max(num_lanes, 1),
-        throughput=throughput,
+        throughput=cum_arrived,
+        departed=cum_departed,
+        unfinished=unfinished,
         action=action,
     )
 
@@ -405,25 +424,25 @@ def _add_text_box(box_id: str, x: float, y: float, width: float, height: float,
     _ensure_poi(f"{box_id}_text", text_x, text_y, text, (0, 0, 0, 255))
 
 
-def update_gui_fixed(step: int, m: StepMetrics, cum_throughput: int,
+def update_gui_fixed(step: int, m: StepMetrics,
                      base_x: float = 120.0, base_y: float = 180.0) -> None:
     """固定配时运行时：在 SUMO GUI 显示当前指标（2行）。"""
     _ensure_poi("line1", base_x, base_y,
                 f"[ Fixed-Time ]  t={step}s")
     _ensure_poi("line2", base_x, base_y - 20,
-                f"Wait={m.waiting_time:.0f}s | Queue={m.avg_queue:.1f} | Cars={cum_throughput}")
+                f"Wait={m.waiting_time:.0f}s | Queue={m.avg_queue:.1f} | Arr={m.throughput}")
+    _ensure_poi("line3", base_x, base_y - 40,
+                f"Dep={m.departed} | Unfinished={m.unfinished}")
 
 
 def update_gui_dqn(
     step: int,
     m_dqn: StepMetrics,
-    cum_tp_dqn: int,
     baseline_fixed: Dict[int, StepMetrics] | None,
-    cum_tp_fixed_map: Dict[int, int] | None,
     base_x: float = 120.0,
     base_y: float = 200.0,
 ) -> None:
-    """DQN 运行时：在 SUMO GUI 显示 DQN 指标 + 固定配时基线 + 改善率（5行）。"""
+    """DQN 运行时：在 SUMO GUI 显示 DQN 指标 + 固定配时基线。"""
     action_text = "SWITCH" if m_dqn.action == 1 else "KEEP"
 
     # 第1行：标题
@@ -433,21 +452,21 @@ def update_gui_dqn(
     # 第2行：DQN 当前指标
     _ensure_poi("line2", base_x, base_y - 15,
                 f"DQN   >> Wait={m_dqn.waiting_time:.0f}s | "
-                f"Queue={m_dqn.avg_queue:.1f} | Cars={cum_tp_dqn}")
+                f"Queue={m_dqn.avg_queue:.1f} | Arr={m_dqn.throughput}")
+    _ensure_poi("line3", base_x, base_y - 30,
+                f"DQN   >> Dep={m_dqn.departed} | Unfinished={m_dqn.unfinished}")
 
-    # 第3行：如果有固定配时基线，显示对比（移除改善率显示）
-    if baseline_fixed is not None and cum_tp_fixed_map is not None:
-        # 找最接近当前时间步的基线数据
+    # 第4行：如果有固定配时基线，显示对比
+    if baseline_fixed is not None:
         closest_step = min(baseline_fixed.keys(), key=lambda s: abs(s - step), default=None)
         if closest_step is not None:
             m_f = baseline_fixed[closest_step]
-            cum_f = cum_tp_fixed_map[closest_step]
-
-            _ensure_poi("line3", base_x, base_y - 30,
-                        f"Fixed >> Wait={m_f.waiting_time:.0f}s | "
-                        f"Queue={m_f.avg_queue:.1f} | Cars={cum_f}")
+            _ensure_poi("line4", base_x, base_y - 45,
+                        f"Fixed >> Wait={m_f.waiting_time:.0f}s | Queue={m_f.avg_queue:.1f} | Arr={m_f.throughput}")
+            _ensure_poi("line5", base_x, base_y - 60,
+                        f"Fixed >> Dep={m_f.departed} | Unfinished={m_f.unfinished}")
         else:
-            _ensure_poi("line3", base_x, base_y - 30, "Fixed >> (no baseline data)")
+            _ensure_poi("line4", base_x, base_y - 45, "Fixed >> (no baseline data)")
 
 
 def show_final_results_on_map(net: NetworkInfo, metrics: List[StepMetrics], title: str, lane_stats: Dict[str, List[float]]) -> None:
@@ -459,6 +478,8 @@ def show_final_results_on_map(net: NetworkInfo, metrics: List[StepMetrics], titl
     avg_wait = np.mean([m.waiting_time for m in metrics])
     avg_q = np.mean([m.avg_queue for m in metrics])
     total_cars = metrics[-1].throughput
+    total_departed = metrics[-1].departed
+    unfinished = metrics[-1].unfinished
 
     # 动态计算面板位置
     boundary = traci.simulation.getNetBoundary()
@@ -466,12 +487,12 @@ def show_final_results_on_map(net: NetworkInfo, metrics: List[StepMetrics], titl
     xmax, ymax = boundary[1]
 
     # 面板尺寸
-    box_width = 80
-    box_height = 40
-    
-    # 将面板放置在【左侧位置】
-    box_x = xmin + 55  # 往左移动
-    box_y = ymax - 10
+    box_width = 50
+    box_height = 58
+
+    # 面板放在左上象限边缘（不遮挡中心）
+    box_x = xmin + 100
+    box_y = ymax - 40
 
     # 白色背景 + 黑色文字
     if "固定" in title or "FIXED" in title.upper():
@@ -488,13 +509,15 @@ def show_final_results_on_map(net: NetworkInfo, metrics: List[StepMetrics], titl
     # 面板文字坐标
     text_x = box_x + 15
     text_y = box_y - 15
-    line_height = 23
-    
-    # 显示结果（英文，大字体，清晰缩写）
+    line_height = 9.0
+
+    # 显示结果（原版6行）
     _ensure_poi("final_title", text_x, text_y, f"== {title_text} ==", text_color)
     _ensure_poi("final_wait", text_x, text_y - line_height, f"Wait: {avg_wait:.0f}s", text_color)
     _ensure_poi("final_queue", text_x, text_y - line_height*2, f"Queue: {avg_q:.1f}", text_color)
-    _ensure_poi("final_cars", text_x, text_y - line_height*3, f"Cars: {total_cars}", text_color)
+    _ensure_poi("final_cars", text_x, text_y - line_height*3, f"Arrived: {total_cars}", text_color)
+    _ensure_poi("final_dep", text_x, text_y - line_height*4, f"Departed: {total_departed}", text_color)
+    _ensure_poi("final_unf", text_x, text_y - line_height*5, f"Unfinished: {unfinished}", text_color)
     
     # 注释掉车道数据显示，避免画面杂乱
     # 如果需要显示车道数据，可以取消下面的注释
@@ -534,7 +557,12 @@ def clear_all_pois():
 # 加载 DQN 智能体
 # ======================================================================
 
-def load_dqn_agent(state_dim: int, action_dim: int, scenario: str) -> DQNAgent:
+def load_dqn_agent(
+    state_dim: int,
+    action_dim: int,
+    scenario: str,
+    strict_model: bool = False,
+) -> DQNAgent:
     """加载训练好的 DQN 模型。"""
     device = torch.device("cpu")
     config = AgentConfig(state_dim=state_dim, action_dim=action_dim, device=device)
@@ -551,9 +579,13 @@ def load_dqn_agent(state_dim: int, action_dim: int, scenario: str) -> DQNAgent:
             agent.load(str(model_path), weights_only=False)
             print(f"  已加载模型: {model_path.name}")
         except Exception as e:
-            print(f"  模型加载失败: {e}，使用未训练模型")
+            if strict_model:
+                raise RuntimeError(f"严格模式下模型加载失败: {model_path} | {e}") from e
+            print(f"  模型加载失败: {e}，使用未训练模型（仅调试用途）")
     else:
-        print(f"  未找到 {model_path.name}，使用未训练模型")
+        if strict_model:
+            raise FileNotFoundError(f"严格模式下未找到模型: {model_path}")
+        print(f"  未找到 {model_path.name}，使用未训练模型（仅调试用途）")
 
     return agent
 
@@ -591,8 +623,9 @@ def run_fixed_time(
     参数:
         delay: SUMO GUI延迟（毫秒）
     """
-    global _pending_arrivals
+    global _pending_arrivals, _pending_departed
     _pending_arrivals = 0
+    _pending_departed = 0
     _poi_ids.clear()
 
     print(f"\n{'='*60}")
@@ -610,6 +643,7 @@ def run_fixed_time(
 
     metrics: List[StepMetrics] = []
     cum_throughput = 0
+    cum_departed = 0
     sim_time = 0
 
     print("  仿真运行中...\n")
@@ -630,9 +664,9 @@ def run_fixed_time(
         steps_consumed = apply_action(action, net, phase_ctrls)
         sim_time += steps_consumed
 
-        m = collect_metrics(net, sim_time, action)
-        cum_throughput += m.throughput
-        m.throughput = cum_throughput
+        cum_throughput += _flush_arrivals()
+        cum_departed += _flush_departed()
+        m = collect_metrics(net, sim_time, action, cum_throughput, cum_departed)
         metrics.append(m)
 
         # 【新增】记录当前步每条车道的排队长度
@@ -640,13 +674,13 @@ def run_fixed_time(
             for lane in net.lanes[tls_id]:
                 lane_stats[lane].append(traci.lane.getLastStepHaltingNumber(lane))
 
-        # update_gui_fixed(sim_time, m, cum_throughput)  # 已禁用GUI实时显示
+        # update_gui_fixed(sim_time, m)  # 已禁用实时显示，避免遮挡截图
 
         if sim_time % 50 < steps_consumed:
             print(f"    t={sim_time:>4d}s | "
                   f"等待={m.waiting_time:>6.0f}s | "
                   f"排队={m.avg_queue:.1f} | "
-                  f"通行量={cum_throughput}")
+                  f"到达={m.throughput} | 发车={m.departed} | 未完成={m.unfinished}")
 
     # ================= 【新增/修改结尾部分】 =================
     clear_all_pois()  # 清理动态文字
@@ -673,6 +707,7 @@ def run_dqn(
     seed: int,
     baseline_fixed: List[StepMetrics] | None = None,
     delay: int = 100,
+    strict_model: bool = False,
 ) -> List[StepMetrics]:
     """运行 DQN 演示，返回逐步指标。
 
@@ -680,16 +715,15 @@ def run_dqn(
         baseline_fixed: 固定配时的逐步指标（用于在 GUI 中对比显示）。
         delay: SUMO GUI延迟（毫秒）
     """
-    global _pending_arrivals
+    global _pending_arrivals, _pending_departed
     _pending_arrivals = 0
+    _pending_departed = 0
     _poi_ids.clear()
 
     # 构建基线查找表（按仿真时间索引）
     fixed_by_step: Dict[int, StepMetrics] | None = None
-    fixed_cum_tp: Dict[int, int] | None = None
     if baseline_fixed:
         fixed_by_step = {m.step: m for m in baseline_fixed}
-        fixed_cum_tp = {m.step: m.throughput for m in baseline_fixed}
 
     print(f"\n{'='*60}")
     print(f"  【DQN自适应控制】 场景: {scenario} | 时长: {duration}s")
@@ -711,13 +745,14 @@ def run_dqn(
     # 构造初始状态以获取维度，再加载模型
     state = get_state(net, phase_ctrls)
     state_dim = state.shape[0]
-    agent = load_dqn_agent(state_dim, action_dim, scenario)
+    agent = load_dqn_agent(state_dim, action_dim, scenario, strict_model=strict_model)
 
     print(f"  路口: {net.tls_ids} ({'级联' if is_cascaded else '单路口'})")
     print(f"  状态维度: {state_dim} | 动作空间: {action_dim}")
 
     metrics: List[StepMetrics] = []
     cum_throughput = 0
+    cum_departed = 0
     sim_time = 0
     phase_durations: List[int] = []
     current_phase_start = 0
@@ -743,9 +778,9 @@ def run_dqn(
                 phase_durations.append(dur)
             current_phase_start = sim_time
 
-        m = collect_metrics(net, sim_time, action)
-        cum_throughput += m.throughput
-        m.throughput = cum_throughput
+        cum_throughput += _flush_arrivals()
+        cum_departed += _flush_departed()
+        m = collect_metrics(net, sim_time, action, cum_throughput, cum_departed)
         metrics.append(m)
 
         # 【新增】记录当前步每条车道的排队长度
@@ -754,7 +789,7 @@ def run_dqn(
                 lane_stats[lane].append(traci.lane.getLastStepHaltingNumber(lane))
 
         # 在 GUI 中显示 DQN 指标 + 固定配时基线对比
-        # update_gui_dqn(sim_time, m, cum_throughput, fixed_by_step, fixed_cum_tp)  # 已禁用GUI实时显示
+        # update_gui_dqn(sim_time, m, fixed_by_step)  # 已禁用实时显示，避免遮挡截图
 
         if sim_time % 50 < steps_consumed:
             act_str = "切换" if action == 1 else "保持"
@@ -762,7 +797,7 @@ def run_dqn(
                   f"动作={act_str} | "
                   f"等待={m.waiting_time:>6.0f}s | "
                   f"排队={m.avg_queue:.1f} | "
-                  f"通行量={cum_throughput}")
+                  f"到达={m.throughput} | 发车={m.departed} | 未完成={m.unfinished}")
 
     # ================= 【新增/修改结尾部分】 =================
     clear_all_pois()
@@ -797,8 +832,8 @@ def plot_comparison(
     scenario: str,
     output_dir: Path,
 ) -> None:
-    """生成时间序列对比图 + 汇总柱状图（黑白打印友好，紧凑布局）。"""
-    # 设置紧凑打印参数
+    """生成时间序列对比图 + 汇总柱状图（彩色显示，紧凑布局）。"""
+    # 设置紧凑参数
     plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
     plt.rcParams['axes.unicode_minus'] = False
     plt.rcParams['font.size'] = 8
@@ -814,17 +849,21 @@ def plot_comparison(
 
     # 紧凑尺寸
     fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
-    fig.suptitle(f'固定配时 vs DQN 对比 — {scenario}', fontsize=11, fontweight='bold')
+
+    color_fixed = '#1f77b4'   # 蓝色
+    color_dqn = '#ff7f0e'     # 橙色
 
     # 1. 等待时间时间序列
     ax = axes[0, 0]
     ax.plot(df_f['step'], df_f['waiting_time'], label='固定配时',
-            linewidth=2.2, color='black', linestyle='-', marker='o',
-            markevery=len(df_f)//8, markersize=5, markerfacecolor='white',
-            markeredgewidth=1.5, markeredgecolor='black')
+            linewidth=2.2, color=color_fixed, linestyle='-', marker='o',
+            markevery=max(1, len(df_f)//8), markersize=5,
+            markerfacecolor='white', markeredgewidth=1.2,
+            markeredgecolor=color_fixed)
     ax.plot(df_d['step'], df_d['waiting_time'], label='DQN',
-            linewidth=1.8, color='black', linestyle='--', marker='s',
-            markevery=len(df_d)//8, markersize=4, markerfacecolor='black')
+            linewidth=2.0, color=color_dqn, linestyle='--', marker='s',
+            markevery=max(1, len(df_d)//8), markersize=4,
+            markerfacecolor=color_dqn, markeredgecolor=color_dqn)
     ax.set_xlabel('仿真时间 (s)', fontsize=9, fontweight='bold')
     ax.set_ylabel('等待时间 (s)', fontsize=9, fontweight='bold')
     ax.set_title('实时等待时间', fontsize=10, fontweight='bold', pad=5)
@@ -839,12 +878,14 @@ def plot_comparison(
     # 2. 排队长度时间序列
     ax = axes[0, 1]
     ax.plot(df_f['step'], df_f['avg_queue'], label='固定配时',
-            linewidth=2.2, color='black', linestyle='-', marker='o',
-            markevery=len(df_f)//8, markersize=5, markerfacecolor='white',
-            markeredgewidth=1.5, markeredgecolor='black')
+            linewidth=2.2, color=color_fixed, linestyle='-', marker='o',
+            markevery=max(1, len(df_f)//8), markersize=5,
+            markerfacecolor='white', markeredgewidth=1.2,
+            markeredgecolor=color_fixed)
     ax.plot(df_d['step'], df_d['avg_queue'], label='DQN',
-            linewidth=1.8, color='black', linestyle='--', marker='s',
-            markevery=len(df_d)//8, markersize=4, markerfacecolor='black')
+            linewidth=2.0, color=color_dqn, linestyle='--', marker='s',
+            markevery=max(1, len(df_d)//8), markersize=4,
+            markerfacecolor=color_dqn, markeredgecolor=color_dqn)
     ax.set_xlabel('仿真时间 (s)', fontsize=9, fontweight='bold')
     ax.set_ylabel('平均排队长度', fontsize=9, fontweight='bold')
     ax.set_title('实时排队长度', fontsize=10, fontweight='bold', pad=5)
@@ -859,12 +900,14 @@ def plot_comparison(
     # 3. 累计通行量
     ax = axes[1, 0]
     ax.plot(df_f['step'], df_f['throughput'], label='固定配时',
-            linewidth=2.2, color='black', linestyle='-', marker='o',
-            markevery=len(df_f)//8, markersize=5, markerfacecolor='white',
-            markeredgewidth=1.5, markeredgecolor='black')
+            linewidth=2.2, color=color_fixed, linestyle='-', marker='o',
+            markevery=max(1, len(df_f)//8), markersize=5,
+            markerfacecolor='white', markeredgewidth=1.2,
+            markeredgecolor=color_fixed)
     ax.plot(df_d['step'], df_d['throughput'], label='DQN',
-            linewidth=1.8, color='black', linestyle='--', marker='s',
-            markevery=len(df_d)//8, markersize=4, markerfacecolor='black')
+            linewidth=2.0, color=color_dqn, linestyle='--', marker='s',
+            markevery=max(1, len(df_d)//8), markersize=4,
+            markerfacecolor=color_dqn, markeredgecolor=color_dqn)
     ax.set_xlabel('仿真时间 (s)', fontsize=9, fontweight='bold')
     ax.set_ylabel('累计通行量', fontsize=9, fontweight='bold')
     ax.set_title('累计通行量', fontsize=10, fontweight='bold', pad=5)
@@ -878,26 +921,24 @@ def plot_comparison(
 
     # 4. 汇总柱状图
     ax = axes[1, 1]
-    final_f = metrics_fixed[-1] if metrics_fixed else StepMetrics(0, 0, 0, 0, 0)
-    final_d = metrics_dqn[-1] if metrics_dqn else StepMetrics(0, 0, 0, 0, 0)
+    final_f = metrics_fixed[-1] if metrics_fixed else StepMetrics(0, 0, 0, 0, 0, 0, 0)
+    final_d = metrics_dqn[-1] if metrics_dqn else StepMetrics(0, 0, 0, 0, 0, 0, 0)
 
     avg_wait_f = np.mean([m.waiting_time for m in metrics_fixed]) if metrics_fixed else 0
     avg_wait_d = np.mean([m.waiting_time for m in metrics_dqn]) if metrics_dqn else 0
     avg_q_f = np.mean([m.avg_queue for m in metrics_fixed]) if metrics_fixed else 0
     avg_q_d = np.mean([m.avg_queue for m in metrics_dqn]) if metrics_dqn else 0
 
-    labels = ['平均等待', '平均排队', '总通行量']
-    vals_f = [avg_wait_f, avg_q_f, final_f.throughput]
-    vals_d = [avg_wait_d, avg_q_d, final_d.throughput]
+    labels = ['平均等待', '平均排队', '总到达量', '未完成车']
+    vals_f = [avg_wait_f, avg_q_f, final_f.throughput, final_f.unfinished]
+    vals_d = [avg_wait_d, avg_q_d, final_d.throughput, final_d.unfinished]
 
     x = np.arange(len(labels))
     w = 0.32
     bars1 = ax.bar(x - w/2, vals_f, w, label='固定配时',
-                   color='white', edgecolor='black', linewidth=2.0,
-                   hatch='///')
+                   color='#6baed6', edgecolor='#2b6cb0', linewidth=1.5)
     bars2 = ax.bar(x + w/2, vals_d, w, label='DQN',
-                   color='0.6', edgecolor='black', linewidth=2.0,
-                   hatch='')
+                   color='#fdae6b', edgecolor='#c05621', linewidth=1.5)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=8, fontweight='bold')
     ax.set_title('最终指标对比', fontsize=10, fontweight='bold', pad=5)
@@ -920,16 +961,23 @@ def plot_comparison(
     plt.tight_layout(pad=1.5, h_pad=2.0, w_pad=2.0)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 保存高分辨率图片（黑白打印友好）
+    # 保存多种格式（适合论文使用）
     path_png = output_dir / f'comparison_{scenario}.png'
     path_pdf = output_dir / f'comparison_{scenario}.pdf'
+    path_svg = output_dir / f'comparison_{scenario}.svg'
+    path_eps = output_dir / f'comparison_{scenario}.eps'
     
     plt.savefig(path_png, dpi=300, bbox_inches='tight', facecolor='white')
     plt.savefig(path_pdf, bbox_inches='tight', facecolor='white')
+    plt.savefig(path_svg, bbox_inches='tight', facecolor='white')
+    plt.savefig(path_eps, bbox_inches='tight', facecolor='white')
     
-    print(f"\n  对比图表已保存（黑白打印友好）:")
+    print(f"\n  对比图表已保存（多种格式）:")
     print(f"    PNG (300 DPI): {path_png}")
     print(f"    PDF (矢量图): {path_pdf}")
+    print(f"    SVG (矢量图): {path_svg}")
+    print(f"    EPS (矢量图): {path_eps}")
+    print(f"  提示: Word 可直接插入 PDF/SVG/EPS，或使用 Inkscape 转换为 EMF")
     plt.show()
 
 
@@ -955,11 +1003,18 @@ def print_summary(
     print(f"\n{'='*60}")
     print(f"  对比结果: {scenario}")
     print(f"{'='*60}")
+    departed_f = metrics_fixed[-1].departed
+    departed_d = metrics_dqn[-1].departed
+    unfinished_f = metrics_fixed[-1].unfinished
+    unfinished_d = metrics_dqn[-1].unfinished
+
     print(f"  {'指标':>12s} | {'固定配时':>10s} | {'DQN':>10s} | {'改善':>8s}")
     print(f"  {'-'*12}-+-{'-'*10}-+-{'-'*10}-+-{'-'*8}")
     print(f"  {'平均等待':>12s} | {avg_wait_f:>10.1f} | {avg_wait_d:>10.1f} | {wait_improve:>7.1f}%")
     print(f"  {'平均排队':>12s} | {avg_q_f:>10.2f} | {avg_q_d:>10.2f} |")
-    print(f"  {'总通行量':>12s} | {total_cars_f:>10d} | {total_cars_d:>10d} | {cars_improve:>7.1f}%")
+    print(f"  {'总到达量':>12s} | {total_cars_f:>10d} | {total_cars_d:>10d} | {cars_improve:>7.1f}%")
+    print(f"  {'总发车量':>12s} | {departed_f:>10d} | {departed_d:>10d} |")
+    print(f"  {'未完成车':>12s} | {unfinished_f:>10d} | {unfinished_d:>10d} |")
     print(f"{'='*60}")
 
 
@@ -979,6 +1034,8 @@ def parse_args() -> argparse.Namespace:
                         help="演示模式: fixed=仅固定配时, dqn=仅DQN, both=先后对比")
     parser.add_argument("--delay", type=int, default=100,
                         help="SUMO GUI延迟（毫秒），默认100ms。设为0则最快速度运行")
+    parser.add_argument("--strict-model", action="store_true",
+                        help="严格模型加载：DQN模型缺失/损坏即报错退出")
     return parser.parse_args()
 
 
@@ -1005,7 +1062,8 @@ def main() -> None:
     if args.mode in ("dqn", "both"):
         metrics_dqn = run_dqn(args.scenario, args.duration, args.seed,
                               baseline_fixed=metrics_fixed if metrics_fixed else None,
-                              delay=args.delay)
+                              delay=args.delay,
+                              strict_model=args.strict_model)
 
     # 对比总结
     if args.mode == "both" and metrics_fixed and metrics_dqn:

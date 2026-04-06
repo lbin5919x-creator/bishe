@@ -49,8 +49,10 @@ class SumoEnvironment:
         self.prev_wait_priority: float = 0.0        # 上一步优先车辆等待时间
         self.prev_wait_normal: float = 0.0          # 上一步普通车辆等待时间
         self.time_step: int = 0                     # 当前时间步
-        self.total_throughput: int = 0              # 累计通行量
+        self.total_throughput: int = 0              # 累计通行量（arrived）
+        self.total_departed: int = 0                # 累计发车量（departed）
         self._pending_arrivals: int = 0             # 相位过渡期间累计到达车辆
+        self._pending_departed: int = 0             # 相位过渡期间累计发车车辆
 
     # ------------------------------------------------------------------
     # 公共API
@@ -64,7 +66,9 @@ class SumoEnvironment:
 
         self.time_step = 0
         self.total_throughput = 0
+        self.total_departed = 0
         self._pending_arrivals = 0
+        self._pending_departed = 0
         if self.phase_controller:
             self.phase_controller.reset()
 
@@ -92,6 +96,7 @@ class SumoEnvironment:
                 self.phase_controller.keep_phase()
                 traci.simulationStep()
                 self._pending_arrivals += traci.simulation.getArrivedNumber()
+                self._pending_departed += traci.simulation.getDepartedNumber()
                 self.time_step += 1
         except Exception as e:
             print(f"SUMO错误: {e}")
@@ -181,6 +186,7 @@ class SumoEnvironment:
         for _ in range(env_cfg.yellow):
             traci.simulationStep()
             self._pending_arrivals += traci.simulation.getArrivedNumber()
+            self._pending_departed += traci.simulation.getDepartedNumber()
 
         # 2. 全红保护：所有方向红灯，确保路口清空
         all_red_state = 'r' * len(current_state)
@@ -188,11 +194,13 @@ class SumoEnvironment:
         for _ in range(env_cfg.all_red):
             traci.simulationStep()
             self._pending_arrivals += traci.simulation.getArrivedNumber()
+            self._pending_departed += traci.simulation.getDepartedNumber()
 
         # 3. 切换到下一绿灯相位（用 setRedYellowGreenState 避免内联程序相位越界）
         traci.trafficlight.setRedYellowGreenState(self.tls_id, self.phases[next_phase_idx])
         traci.simulationStep()
         self._pending_arrivals += traci.simulation.getArrivedNumber()
+        self._pending_departed += traci.simulation.getDepartedNumber()
 
         # 更新相位控制器状态
         self.phase_controller.current_phase = next_phase_idx
@@ -255,14 +263,20 @@ class SumoEnvironment:
         total_wait = sum(traci.edge.getWaitingTime(edge) for edge in self.edges)
         avg_queue = float(np.mean([traci.lane.getLastStepHaltingNumber(lane) for lane in self.lanes])) if self.lanes else 0.0
         
-        # 累计通行量（包含相位过渡期间的到达车辆）
+        # 累计通行量/发车量（包含相位过渡期间）
         self.total_throughput += self._pending_arrivals
+        self.total_departed += self._pending_departed
         self._pending_arrivals = 0
-        
+        self._pending_departed = 0
+
+        unfinished = max(self.total_departed - self.total_throughput, 0)
+
         return {
             "waiting_time": total_wait,    # 总等待时间
             "avg_queue": avg_queue,        # 平均排队长度
-            "throughput": self.total_throughput,  # 累计通行量
+            "throughput": self.total_throughput,  # 累计通行量(arrived)
+            "departed": self.total_departed,       # 累计发车量(departed)
+            "unfinished": unfinished,              # 未完成车辆
             "time": self.time_step * env_cfg.time_step,  # 仿真时间
         }
 

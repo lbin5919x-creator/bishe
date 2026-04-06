@@ -23,6 +23,34 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="计算设备，默认自动选择（有 CUDA 则用 GPU）",
     )
+    parser.add_argument(
+        "--episodes-single",
+        type=int,
+        default=200,
+        help="单路口训练回合数",
+    )
+    parser.add_argument(
+        "--episodes-cascaded",
+        type=int,
+        default=300,
+        help="级联场景训练回合数",
+    )
+    parser.add_argument(
+        "--with-eval",
+        action="store_true",
+        help="训练完成后自动评估 fixed_time 与 dqn",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=50,
+        help="自动评估回合数（建议>=50）",
+    )
+    parser.add_argument(
+        "--strict-model",
+        action="store_true",
+        help="评估时启用严格模型加载",
+    )
     return parser.parse_args()
 
 
@@ -43,7 +71,7 @@ def main() -> None:
                 "--scenario",
                 "t_intersection",
                 "--episodes",
-                "200",
+                str(args.episodes_single),
                 "--double-dqn",
                 "--dueling",
                 "--seed",
@@ -61,7 +89,7 @@ def main() -> None:
                 "--scenario",
                 "x_intersection",
                 "--episodes",
-                "200",
+                str(args.episodes_single),
                 "--double-dqn",
                 "--dueling",
                 "--seed",
@@ -79,7 +107,7 @@ def main() -> None:
                 "--scenario",
                 "cascaded_intersection",
                 "--episodes",
-                "300",
+                str(args.episodes_cascaded),
                 "--seed",
                 seed_s,
                 "--device",
@@ -119,6 +147,91 @@ def main() -> None:
     print(f"  {'':->56s}")
     print(f"  {'总耗时':<44s} {total_time / 60:>6.1f} 分钟")
     print(f"{'=' * 60}\n")
+
+    if args.with_eval and all(ok for _, ok, _ in results):
+        print(f"\n{'=' * 60}")
+        print("  开始自动评估（公平对比）")
+        print(f"{'=' * 60}")
+
+        strict_flag = ["--strict-model"] if args.strict_model else []
+
+        eval_tasks: list[dict] = [
+            {
+                "name": "评估 丁字路口 fixed_time",
+                "cmd": [
+                    sys.executable, "-m", "evaluation.evaluate",
+                    "--scenario", "t_intersection",
+                    "--controller", "fixed_time",
+                    "--episodes", str(args.eval_episodes),
+                    "--seed", seed_s,
+                    "--device", device,
+                ],
+            },
+            {
+                "name": "评估 丁字路口 dqn",
+                "cmd": [
+                    sys.executable, "-m", "evaluation.evaluate",
+                    "--scenario", "t_intersection",
+                    "--controller", "dqn",
+                    "--episodes", str(args.eval_episodes),
+                    "--seed", seed_s,
+                    "--device", device,
+                    *strict_flag,
+                ],
+            },
+            {
+                "name": "评估 十字路口 fixed_time",
+                "cmd": [
+                    sys.executable, "-m", "evaluation.evaluate",
+                    "--scenario", "x_intersection",
+                    "--controller", "fixed_time",
+                    "--episodes", str(args.eval_episodes),
+                    "--seed", seed_s,
+                    "--device", device,
+                ],
+            },
+            {
+                "name": "评估 十字路口 dqn",
+                "cmd": [
+                    sys.executable, "-m", "evaluation.evaluate",
+                    "--scenario", "x_intersection",
+                    "--controller", "dqn",
+                    "--episodes", str(args.eval_episodes),
+                    "--seed", seed_s,
+                    "--device", device,
+                    *strict_flag,
+                ],
+            },
+            {
+                "name": "评估 级联路口 fixed_time",
+                "cmd": [
+                    sys.executable, "-m", "evaluation.evaluate_cascaded",
+                    "--scenario", "cascaded_intersection",
+                    "--controller", "fixed_time",
+                    "--episodes", str(args.eval_episodes),
+                    "--seed", seed_s,
+                    "--device", device,
+                ],
+            },
+            {
+                "name": "评估 级联路口 dqn",
+                "cmd": [
+                    sys.executable, "-m", "evaluation.evaluate_cascaded",
+                    "--scenario", "cascaded_intersection",
+                    "--controller", "dqn",
+                    "--episodes", str(args.eval_episodes),
+                    "--seed", seed_s,
+                    "--device", device,
+                    *strict_flag,
+                ],
+            },
+        ]
+
+        for i, task in enumerate(eval_tasks, 1):
+            print(f"[{i}/{len(eval_tasks)}] {task['name']}")
+            ret = subprocess.run(task["cmd"])
+            if ret.returncode != 0:
+                raise RuntimeError(f"自动评估失败: {task['name']}")
 
 
 if __name__ == "__main__":
